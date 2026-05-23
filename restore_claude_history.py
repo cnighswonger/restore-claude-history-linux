@@ -366,6 +366,9 @@ def parse_args() -> argparse.Namespace:
                    help="also restore <project>/memory/ subdirs")
     p.add_argument("--verbose", action="store_true",
                    help="log every file decision, not just the summary")
+    p.add_argument("--dest", metavar="DIR", type=Path,
+                   help="restore into DIR instead of ~/.claude/projects "
+                        "(useful for testing against a copy of your real projects)")
 
     # Encoded project names start with '-', which argparse would otherwise
     # mistake for another flag. Rewrite "--project FOO" -> "--project=FOO"
@@ -391,7 +394,9 @@ def main() -> int:
     # getpass.getuser() reads LOGNAME/USER env vars; more reliable than
     # os.getlogin() in non-TTY contexts (where it can return "root").
     user = getpass.getuser()
-    claude_dir = Path.home() / ".claude" / "projects"
+    claude_dir = args.dest if args.dest else Path.home() / ".claude" / "projects"
+    if args.dest:
+        print(f"Destination override: {claude_dir}")
 
     device = find_tm_device()
     print(f"Time Machine volume: /dev/{device}")
