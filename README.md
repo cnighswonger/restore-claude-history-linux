@@ -58,7 +58,7 @@ python3 restore_claude_history.py
 3. Indexes every `.jsonl` it finds across all snapshots.
 4. For each `(project, filename)`, picks the **largest** version — JSONLs are append-only, so bigger = more complete.
 5. Copies it back, **preserving the original mtime** and stripping the inherited Time Machine ACL so the restored files remain writable.
-6. Skips files where your on-disk version is already the same size or larger.
+6. Skips files where your on-disk version is already the same size or larger — so active or in-progress chats are never overwritten with an older snapshot.
 7. Cleans up the snapshots it mounted (leaves any pre-existing system mounts alone).
 
 ### Verifying it works
@@ -72,10 +72,6 @@ python3 tests/verify_restore.py --project=-Users-you-projects-foo
 ## Background reading
 
 See [NOTES.md](NOTES.md) for the full story: how the bug works, what Time Machine snapshots actually look like, what we tried that didn't work, and the verified working commands from the original recovery session.
-
-## Bash version
-
-`restore-claude-history.sh` is an earlier portable bash 3.2 version, kept as a no-dependencies fallback. It has a known cleanup bug (see [NOTES.md](NOTES.md)) — use the Python version unless you have a specific reason not to.
 
 ## License
 
