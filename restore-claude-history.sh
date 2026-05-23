@@ -23,7 +23,8 @@ ONLY_PROJECT=""
 CLAUDE_DIR="$HOME/.claude/projects"
 TMP_PREFIX="/tmp/tm-claude-restore"
 INDEX_FILE=""
-MOUNTS_FILE=""
+MOUNTS_FILE=""      # all mount points we plan to read from (ours + pre-existing)
+OWN_MOUNTS_FILE=""  # only mounts we created; cleanup will only unmount these
 
 # -------- usage --------
 usage() {
@@ -68,16 +69,19 @@ die()  { echo "error: $*" >&2; exit 1; }
 # -------- cleanup trap --------
 cleanup() {
   local rc=$?
-  if [ -n "${MOUNTS_FILE:-}" ] && [ -f "$MOUNTS_FILE" ]; then
+  # Only unmount snapshots WE mounted. Pre-existing system auto-mounts
+  # (like /Volumes/.timemachine/...) are left alone.
+  if [ -n "${OWN_MOUNTS_FILE:-}" ] && [ -f "$OWN_MOUNTS_FILE" ]; then
     while IFS= read -r mp; do
       [ -z "$mp" ] && continue
       if mount | grep -q " on $mp "; then
         diskutil unmount "$mp" >/dev/null 2>&1 || diskutil unmount force "$mp" >/dev/null 2>&1 || true
       fi
       [ -d "$mp" ] && rmdir "$mp" 2>/dev/null || true
-    done < "$MOUNTS_FILE"
-    rm -f "$MOUNTS_FILE"
+    done < "$OWN_MOUNTS_FILE"
+    rm -f "$OWN_MOUNTS_FILE"
   fi
+  [ -n "${MOUNTS_FILE:-}" ] && rm -f "$MOUNTS_FILE"
   [ -n "${INDEX_FILE:-}" ] && rm -f "$INDEX_FILE"
   exit $rc
 }
@@ -117,6 +121,7 @@ log "Found $SNAP_COUNT snapshots."
 
 # -------- mount each snapshot --------
 MOUNTS_FILE="$(mktemp -t tm-claude-mounts)"
+OWN_MOUNTS_FILE="$(mktemp -t tm-claude-own-mounts)"
 INDEX_FILE="$(mktemp -t tm-claude-index)"
 
 # Format of $INDEX_FILE lines:
@@ -125,32 +130,81 @@ INDEX_FILE="$(mktemp -t tm-claude-index)"
 
 USER_SHORT="$(id -un)"
 
+# Look for an existing mount of a given snapshot name (e.g. from macOS's
+# auto-mount at /Volumes/.timemachine/<UUID>/<timestamp>.backup). Returns
+# the mount point on stdout if found.
+find_existing_mount() {
+  local snap_name="$1"
+  # `mount` lines look like:
+  #   com.apple.TimeMachine.<ts>.backup@/dev/diskNsM on /Volumes/.timemachine/<UUID>/<ts>.backup (apfs,...)
+  mount | awk -v s="$snap_name" '
+    $1 ~ ("^" s "@") {
+      # Find the " on " token and take everything between it and " ("
+      for (i = 1; i <= NF; i++) if ($i == "on") { start = i + 1; break }
+      out = ""
+      for (j = start; j <= NF; j++) {
+        if ($j ~ /^\(/) break
+        out = (out == "" ? $j : out " " $j)
+      }
+      print out
+      exit
+    }'
+}
+
+# Given a snapshot mount point, find the "Data" dir. Two known layouts:
+#   1. our own mount_apfs:  <mp>/<timestamp>.backup/Data/...
+#   2. macOS auto-mount:    <mp>/<timestamp>.backup/Data/...  (same)
+#                       OR  <mp>/Data/...                     (sometimes)
+# We handle both by probing.
+find_data_root() {
+  local mp="$1"
+  local d
+  # Direct Data/ under the mount point.
+  if [ -d "$mp/Data/Users" ]; then
+    echo "$mp/Data"
+    return 0
+  fi
+  # Nested under a *.backup dir.
+  for d in "$mp"/*.backup; do
+    [ -d "$d" ] || continue
+    if [ -d "$d/Data/Users" ]; then
+      echo "$d/Data"
+      return 0
+    fi
+  done
+  return 1
+}
+
 i=0
 while IFS= read -r snap; do
   [ -z "$snap" ] && continue
   i=$((i + 1))
   label=$(echo "$snap" | sed -E 's/^com\.apple\.TimeMachine\.//; s/\.backup$//')
-  mp="${TMP_PREFIX}-${i}-${label}"
-  mkdir -p "$mp" || die "cannot mkdir $mp"
+
+  # Prefer an existing mount (macOS often auto-mounts these).
+  mp="$(find_existing_mount "$snap")"
+  if [ -n "$mp" ] && [ -d "$mp" ]; then
+    vlog "Using existing mount for $snap at $mp"
+  else
+    mp="${TMP_PREFIX}-${i}-${label}"
+    mkdir -p "$mp" || die "cannot mkdir $mp"
+    vlog "Mounting $snap at $mp"
+    if ! mount_apfs -s "$snap" "/dev/$TM_DEV" "$mp" 2>/dev/null; then
+      log "  warn: failed to mount $snap, skipping"
+      rmdir "$mp" 2>/dev/null || true
+      continue
+    fi
+    echo "$mp" >> "$OWN_MOUNTS_FILE"
+  fi
   echo "$mp" >> "$MOUNTS_FILE"
 
-  vlog "Mounting $snap at $mp"
-  if ! mount_apfs -s "$snap" "/dev/$TM_DEV" "$mp" 2>/dev/null; then
-    log "  warn: failed to mount $snap, skipping"
+  data_root="$(find_data_root "$mp" || true)"
+  if [ -z "$data_root" ]; then
+    vlog "  no Data/ dir found under $mp"
     continue
   fi
 
-  # Inside the mount, the backup data lives at <mp>/<timestamp>.backup/Data/...
-  # Locate the projects dir.
-  backup_root=""
-  for d in "$mp"/*.backup; do
-    [ -d "$d" ] || continue
-    backup_root="$d"
-    break
-  done
-  [ -n "$backup_root" ] || { vlog "  no *.backup dir under $mp"; continue; }
-
-  projects_root="$backup_root/Data/Users/$USER_SHORT/.claude/projects"
+  projects_root="$data_root/Users/$USER_SHORT/.claude/projects"
   if [ ! -d "$projects_root" ]; then
     vlog "  no projects dir at $projects_root"
     continue
@@ -258,14 +312,9 @@ SORTED_MOUNTS="$(sort -r "$MOUNTS_FILE")"
 
 while IFS= read -r mp; do
   [ -z "$mp" ] && continue
-  backup_root=""
-  for d in "$mp"/*.backup; do
-    [ -d "$d" ] || continue
-    backup_root="$d"
-    break
-  done
-  [ -n "$backup_root" ] || continue
-  projects_root="$backup_root/Data/Users/$USER_SHORT/.claude/projects"
+  data_root="$(find_data_root "$mp" || true)"
+  [ -n "$data_root" ] || continue
+  projects_root="$data_root/Users/$USER_SHORT/.claude/projects"
   [ -d "$projects_root" ] || continue
 
   for proj_path in "$projects_root"/*; do
