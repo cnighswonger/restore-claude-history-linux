@@ -47,7 +47,7 @@ Verified manually in a real recovery session. The script should automate this:
 
 4. **For each JSONL filename (UUID.jsonl), pick the largest version across all snapshots.** JSONLs are append-only logs. Bigger file = longer conversation = more complete. Same UUID across multiple snapshots = same session captured at different points in time; you want the latest/biggest.
 
-5. **Copy with mtime preservation.** Use `cp -p` so the destination keeps the snapshot's original modification time. Otherwise VS Code's "Recent chats" picker will sort restored files as "just now."
+5. **Copy with mtime preservation, and re-stamp after any re-copy.** Use `cp -p` so the destination keeps the snapshot's original modification time — otherwise VS Code's "Recent chats" picker sorts restored files as "just now." **Important gotcha:** if a file fails on the first copy (e.g. ACL conflict) and you re-copy after stripping the ACL, `cp -p`'s mtime preservation doesn't always survive the second pass. Explicitly re-stamp with `touch -r <source> <dest>` after any re-copy. In the live recovery, 3 files showed up as "edited just now" in VS Code's chat picker until this explicit re-stamp ran.
 
 6. **Strip ACLs after copy.** TM snapshot files carry an inherited ACL: `group:everyone deny write,delete,append,writeattr,writeextattr,chown`. This sticks to the copy and blocks future overwrites. `chmod -N <file>` removes the ACL. `chmod u+w <file>` ensures user write bit.
 
