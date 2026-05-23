@@ -69,6 +69,12 @@ die()  { echo "error: $*" >&2; exit 1; }
 # -------- cleanup trap --------
 cleanup() {
   local rc=$?
+  # DEBUG: investigating why OWN_MOUNTS_FILE appears empty on EXIT even when
+  # we mounted snapshots ourselves earlier in the run. See KNOWN_BUG in
+  # NOTES.md. Leave these prints in until the trap-cleanup bug is resolved
+  # or until the bash version is officially deprecated in favor of Python.
+  echo "[debug] cleanup: OWN_MOUNTS_FILE=$OWN_MOUNTS_FILE" >&2
+  [ -f "$OWN_MOUNTS_FILE" ] && { echo "[debug] contents:" >&2; cat "$OWN_MOUNTS_FILE" >&2; }
   # Only unmount snapshots WE mounted. Pre-existing system auto-mounts
   # (like /Volumes/.timemachine/...) are left alone.
   if [ -n "${OWN_MOUNTS_FILE:-}" ] && [ -f "$OWN_MOUNTS_FILE" ]; then

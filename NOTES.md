@@ -95,6 +95,26 @@ Verified manually in a real recovery session. The script should automate this:
 - Dry-run mode for safety. (Yes, definitely. `--dry-run` should be standard.)
 - Should it also restore `~/.claude/projects/<project>/memory/` directories? (Probably yes, same logic — pick the most recent version.)
 
+## KNOWN_BUG: bash trap cleanup doesn't unmount our own mounts
+
+When `restore-claude-history.sh` mounts snapshots itself (via `mount_apfs`),
+those mount points are written to `$OWN_MOUNTS_FILE` so the EXIT trap can
+unmount them. In practice the trap fires, but `$OWN_MOUNTS_FILE` is empty
+at cleanup time — even after a run that demonstrably mounted 3 snapshots
+and successfully read JSONLs from them. The `mount`s persist after the
+script exits and have to be cleaned up by hand:
+
+```
+for mp in /tmp/tm-claude-restore-*; do diskutil unmount "$mp"; rmdir "$mp"; done
+```
+
+Debug `echo`s in `cleanup()` confirm the file exists and is empty by the
+time cleanup runs. Cause not yet identified — possibly a subshell issue
+with the `while … done <<EOF $SNAPSHOTS EOF` loop, possibly something
+about how `>>` interacts with the trap context. Not investigated further
+because we're switching the primary implementation to Python; the bash
+script is being kept as a no-dependencies fallback only.
+
 ## Reference: the live recovery this was built from
 
 Original recovery session happened from inside `~/projects/young-ladys-primer` on 2026-05-23. ~26 lost JSONLs recovered from 4 TM snapshots dating March 11 through April 24, 2026. Full transcript of the session is at `~/.claude/projects/-Users-garrettstone-projects-young-ladys-primer/a2144d30-9891-47ea-810d-9a124d6b7497.jsonl` (about 450KB). Don't load it as context for new sessions — this NOTES.md is the distilled version. Reference it only if a specific detail is missing here.
