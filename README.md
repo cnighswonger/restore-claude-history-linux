@@ -6,7 +6,7 @@ Recover deleted Claude Code chat transcripts from macOS Time Machine snapshots.
 
 Claude Code stores chat transcripts as JSONL files under `~/.claude/projects/<encoded-cwd>/`. A cleanup job prunes them after `cleanupPeriodDays` (default: **30 days**, undocumented, no warning). If you haven't changed that setting, you've probably already lost months of conversations.
 
-If you have a macOS Time Machine drive, this script can get them back.
+If you have a macOS Time Machine drive, this script ([`restore_claude_history.py`](restore_claude_history.py)) can get them back.
 
 ## Prevention first
 
@@ -18,7 +18,9 @@ Before anything else, add this to `~/.claude/settings.json`:
 
 That's ~100 years. There's no documented upper bound; the schema just wants a positive integer. Do this on every machine you use Claude Code on.
 
-## Recovery (this script)
+## Recovery
+
+This script: [`restore_claude_history.py`](restore_claude_history.py)
 
 ### Requirements
 
