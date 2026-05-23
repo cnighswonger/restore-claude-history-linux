@@ -355,12 +355,27 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--dry-run", action="store_true",
                    help="show what would be restored; copy nothing")
     p.add_argument("--project", metavar="NAME",
-                   help="limit to one encoded project dir (e.g. -Users-you-projects-foo)")
+                   help="limit to one encoded project dir "
+                        "(e.g. -Users-you-projects-foo)")
     p.add_argument("--include-memory", action="store_true",
                    help="also restore <project>/memory/ subdirs")
     p.add_argument("--verbose", action="store_true",
                    help="log every file decision, not just the summary")
-    return p.parse_args()
+
+    # Encoded project names start with '-', which argparse would otherwise
+    # mistake for another flag. Rewrite "--project FOO" -> "--project=FOO"
+    # so users don't have to remember the '=' syntax.
+    argv = sys.argv[1:]
+    rewritten: list[str] = []
+    i = 0
+    while i < len(argv):
+        if argv[i] == "--project" and i + 1 < len(argv) and argv[i + 1].startswith("-"):
+            rewritten.append(f"--project={argv[i + 1]}")
+            i += 2
+        else:
+            rewritten.append(argv[i])
+            i += 1
+    return p.parse_args(rewritten)
 
 
 def main() -> int:
