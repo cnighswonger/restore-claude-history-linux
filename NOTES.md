@@ -71,4 +71,4 @@ To fill in once we start linking this repo from those threads. Search `anthropic
 
 ## Origin
 
-The original recovery happened on 2026-05-23 from inside `~/projects/young-ladys-primer`. ~26 lost JSONLs recovered from 4 TM snapshots dating March 11 through April 24, 2026. The full transcript of that session lives at `~/.claude/projects/-Users-garrettstone-projects-young-ladys-primer/a2144d30-9891-47ea-810d-9a124d6b7497.jsonl`. The script in this repo was extracted from what we learned doing that by hand.
+This script was extracted from a real recovery session: months of Claude Code chats on a long-running personal project, gone overnight after an update. Working through the recovery by hand surfaced every gotcha listed above. The code here is the distilled, automated version of that work.
