@@ -104,7 +104,7 @@ Open threads in `anthropics/claude-code` where users are hitting the disappearin
 In order — comment on one, wait a few days, then the next. Tailor each comment; don't paste verbatim.
 
 - [x] **[#59248 — Silent retention cleanup deletes session transcripts with no warning, opt-in, or recovery](https://github.com/anthropics/claude-code/issues/59248)** — the bug as described in the title *is* what this tool addresses. A recovery link is squarely on-topic, not spam. Best first comment. *Posted 2026-05-24.*
-- [ ] **[#41458 — `cleanupPeriodDays: 99999` ignored — 490 sessions silently deleted despite explicit setting](https://github.com/anthropics/claude-code/issues/41458)** — 10 comments, active, and the most-affected users (who set the flag and *still* lost data) are exactly the people who need recovery. Also the evidence that prevention alone isn't enough.
+- [x] **[#41458 — `cleanupPeriodDays: 99999` ignored — 490 sessions silently deleted despite explicit setting](https://github.com/anthropics/claude-code/issues/41458)** — 10 comments, active, and the most-affected users (who set the flag and *still* lost data) are exactly the people who need recovery. Also the evidence that prevention alone isn't enough. *Posted 2026-05-25.*
 
 If those land well (replies, thumbs-up, repo traffic in GitHub Insights), expand to the next tier. If they get ignored or pushback, stop and rethink the message before posting more.
 
