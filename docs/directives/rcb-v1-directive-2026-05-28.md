@@ -17,6 +17,7 @@
   - Finding 4 (LOW): v1.1 backend stubs removed from file layout; future backends documented in directive + backend-authoring docs only.
   - Finding 5 (LOW): AGENTS.md gets distinct `--approve` / `--request-changes` / `--comment` examples; bot name reference corrected.
 - **v3 (2026-05-28):** Codex Round 2 addressed — the Round 1 fix to Finding 1 introduced an internal contradiction (Phase 2 supposedly ships Btrfs with Timeshift-skip logic; Phase 3 supposedly wires up the skip — incompatible). Moved overlap resolution from per-backend `discover()` into the orchestrator, where the overlap-resolution table is a single source of truth and skip rules only fire when the owning backend is actually registered. ABC docstring, overlap section, and Phase 2/3 descriptions now consistent.
+- **v4 (2026-05-28):** Codex Round 3 addressed — v3's "prune when owner is available" rule reintroduced a false-negative path (if owner `is_available()=True` but `discover()` returned zero due to config drift or parser failure, valid peer snapshots would still be stripped). Tightened the rule: pruning happens only when the owner backend positively returns at least one snapshot matching the claimed-path-pattern in this run. Also specified that explicit `--backend <name>` mode bypasses overlap resolution entirely.
 
 ## Goal
 
@@ -79,16 +80,26 @@ When the same physical snapshots are visible to multiple backends, the directive
 | Bare Btrfs subvolumes (no Timeshift/Snapper management) | `btrfs` | No higher-layer config exists |
 | Bare ZFS snapshots | `zfs` | No overlap with other v1 backends |
 
-**The orchestrator applies the overlap-resolution table after discovery completes.** Each backend's `discover()` reports what its tooling reports — no backend needs to know about its peers. After all backends have returned their `DiscoveredSnapshot` lists, the orchestrator deduplicates by walking the table above: for each `(owner, claimed-path-pattern)` entry where the owner backend IS in the registered + available set, the orchestrator removes matching snapshots from other backends' lists.
+**The orchestrator applies the overlap-resolution table after discovery completes, gated on positive ownership claim.** Each backend's `discover()` reports what its tooling reports — no backend needs to know about its peers. After all backends have returned their `DiscoveredSnapshot` lists, the orchestrator deduplicates by walking the table above with this rule:
 
-This design choice is deliberate (per Codex Round 2):
+> For each `(owner, claimed-path-pattern)` entry, the orchestrator removes matching snapshots from peer backends' lists **only if the owner backend itself returned at least one snapshot under that claimed-path-pattern in this run.** Mere `is_available()=True` on the owner is insufficient to trigger pruning.
+
+This guards against a false-negative path: if Timeshift's `is_available()` returns True but `discover()` returns zero (config drift, parser failure, transient mount issue), the orchestrator must NOT strip `/timeshift/snapshots/*` results from Btrfs — those Btrfs results may be the only recoverable candidates the user has.
+
+In Phase 2 (Btrfs only, Timeshift backend not yet registered), no pruning happens — Btrfs's results stand as-is, possibly with what Phase 3 would later attribute to Timeshift. The user gets candidates; correctness is preserved.
+
+### Overlap resolution in explicit `--backend <name>` mode
+
+When the user passes `--backend zfs|btrfs|timeshift` (not `auto`), the orchestrator runs ONLY that backend's `discover()` and skips cross-backend overlap resolution entirely. Rationale: the user is being explicit about which inventory they want; if they pass `--backend btrfs` on a Timeshift-on-Btrfs host, they should see all subvolumes Btrfs can enumerate including ones Timeshift would have claimed in `auto` mode. The overlap-resolution rules exist to disambiguate `auto`-mode ownership, not to filter explicit requests.
+
+### Design choices (deliberate, per Codex Rounds 2 + 3)
 
 - **Backends stay independent** — no `btrfs.py` import of Timeshift internals, no "skip this path because some-future-backend might claim it" logic.
-- **Skip rules only fire when the owning backend is actually present.** In Phase 2 (Btrfs only, Timeshift not yet implemented), Btrfs's results stand as-is — no false zero-match risk on a Timeshift-on-Btrfs host before Timeshift backend lands; the host gets results, possibly with duplicates that the eventual Phase 3 will resolve.
+- **Pruning gated on positive claim.** "Owner is available" is necessary but not sufficient; the owner must have actually returned matching snapshots. Closes the false-negative path where an installed-but-broken owner backend would silently steal results from a working peer.
+- **Explicit-backend mode bypasses overlap pass.** Predictable, user-controlled, and matches the principle that explicit requests are honored verbatim.
 - **The overlap table is the single source of truth** — changes happen in one place (orchestrator) when a new backend is added, not scattered across every existing backend's `discover()`.
-- **The ambiguity-error case stays rare in practice** once Phase 3 lands and the orchestrator deduplicates; pre-Phase-3, Btrfs and Timeshift can co-discover the same paths but only Btrfs is implemented, so no ambiguity surfaces yet.
 
-The previous v1 draft of this section assigned skip-responsibility to each backend's `discover()` and required `btrfs.discover()` to skip Timeshift paths "even when the higher-layer backend isn't implemented yet." That was internally inconsistent with the phase plan (which expected Btrfs to ship with skip logic in Phase 2 and the skip behavior to actually function in Phase 3) and risked false zero-matches. The orchestrator-side deduplication resolves both issues.
+The earlier v1 draft of this section assigned skip-responsibility to each backend's `discover()` (required `btrfs.discover()` to skip Timeshift paths "even when the higher-layer backend isn't implemented yet"). That was internally inconsistent with the phase plan. The v2 draft moved skip-responsibility to the orchestrator but used "owner is available" as the gate, which still had the false-negative path. v3 lands the positive-claim rule.
 
 ## File layout
 
