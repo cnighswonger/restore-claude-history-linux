@@ -87,7 +87,9 @@ Before writing any code, we worked through a real recovery in a Claude Code sess
 
 These are the things the script is silently working around. Document them here so they don't get re-discovered.
 
-- **Spotlight indexes APFS Time Machine volumes the moment they mount, and you cannot turn it off.** `mdutil -i off` reports success but the index restarts. `.metadata_never_index` marker files do nothing. Apple's Spotlight Privacy UI refuses to add TM volumes. Result: high CPU (CGPDFService, mds_stores, mdworker_shared) for as long as the drive is mounted. Mitigation: **be fast** — mount, restore, unmount, eject.
+- **Spotlight indexes APFS Time Machine volumes the moment they mount, and you cannot turn it off.** `mdutil -i off` reports success but the index restarts. `.metadata_never_index` marker files do nothing. Apple's Spotlight Privacy UI refuses to add TM volumes. Result: high CPU (CGPDFService, mds_stores, mdworker_shared) for as long as the drive is mounted. Mitigation: **be fast** — mount, restore, unmount, eject. v1.1 will revisit `mdutil -i off` more carefully; see TODO.md.
+
+- **Sequential mounting (v1.0.1) helps, but doesn't quiet Spotlight.** Earlier versions mounted every snapshot up-front. v1.0.1 mounts one at a time, walks it, unmounts, moves on. This *did* visibly reduce the concurrent-mount worker pile-up (no more 4-up CGPDFService at 20–50% CPU each on a 4-snapshot drive). What's left: ~12 mdworker_shared + ~5 CGPDFService spawn shortly after script exit with mds_stores spiking — best read is that they're scanning the macOS-owned auto-mount, which is still mounted because we deliberately don't touch it. Sequential mounting bounded what *we* contributed; it can't quiet what the OS auto-mount keeps active. Actual fix queued for v1.1.
 
 - **macOS sometimes pre-mounts snapshots at `/Volumes/.timemachine/<UUID>/<ts>.backup/`.** Trying `mount_apfs` on those fails with `Resource busy`. The script detects existing mounts and uses them directly rather than trying to remount.
 

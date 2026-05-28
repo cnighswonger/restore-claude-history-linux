@@ -15,7 +15,7 @@ or IDE running this. See NOTES.md for background.
 
 from __future__ import annotations
 
-__version__ = "1.0.0"
+__version__ = "1.0.1"
 
 import argparse
 import getpass
@@ -226,17 +226,6 @@ def index_snapshot(
     return entries
 
 
-def pick_largest(entries: list[JsonlEntry]) -> dict[tuple[str, str], JsonlEntry]:
-    """For each (project, filename), keep the entry with the largest size."""
-    best: dict[tuple[str, str], JsonlEntry] = {}
-    for e in entries:
-        key = (e.project, e.filename)
-        cur = best.get(key)
-        if cur is None or e.size > cur.size:
-            best[key] = e
-    return best
-
-
 # -------- restore --------
 
 
@@ -288,8 +277,8 @@ def restore_file(entry: JsonlEntry, claude_dir: Path, dry_run: bool, verbose: bo
     return (True, entry.size)
 
 
-def restore_subdirs(
-    snapshots: list[Snapshot],
+def restore_subdirs_from_snapshot(
+    snap: Snapshot,
     user: str,
     claude_dir: Path,
     only_project: str | None,
@@ -298,57 +287,49 @@ def restore_subdirs(
     verbose: bool,
 ) -> int:
     """
-    Restore per-session subdirs (subagents/, etc.) and optionally memory/.
-    Walks snapshots newest-first; first writer wins. Skips dirs that already
-    exist on disk.
+    Restore per-session subdirs (subagents/, etc.) and optionally memory/
+    from one mounted snapshot. Skips dirs that already exist on disk —
+    so when called newest-first across snapshots, first writer wins.
     """
-    # Sort newest-first by snapshot name (timestamp is embedded, so lexical
-    # sort works).
-    snaps_sorted = sorted(
-        (s for s in snapshots if s.mountpoint),
-        key=lambda s: s.name,
-        reverse=True,
-    )
+    if snap.mountpoint is None:
+        return 0
+    data = find_data_root(snap.mountpoint)
+    if data is None:
+        return 0
+    projects = data / "Users" / user / ".claude" / "projects"
+    if not projects.is_dir():
+        return 0
     copied = 0
-    for snap in snaps_sorted:
-        assert snap.mountpoint is not None
-        data = find_data_root(snap.mountpoint)
-        if data is None:
+    for proj_dir in projects.iterdir():
+        if not proj_dir.is_dir():
             continue
-        projects = data / "Users" / user / ".claude" / "projects"
-        if not projects.is_dir():
+        if only_project and proj_dir.name != only_project:
             continue
-        for proj_dir in projects.iterdir():
-            if not proj_dir.is_dir():
+        dest_proj = claude_dir / proj_dir.name
+        for sub in proj_dir.iterdir():
+            if not sub.is_dir():
                 continue
-            if only_project and proj_dir.name != only_project:
+            if sub.name == "memory" and not include_memory:
                 continue
-            dest_proj = claude_dir / proj_dir.name
-            for sub in proj_dir.iterdir():
-                if not sub.is_dir():
-                    continue
-                if sub.name == "memory" and not include_memory:
-                    continue
-                dest = dest_proj / sub.name
-                if dest.exists():
-                    continue
-                if dry_run:
-                    print(f"would  subdir {dest} (from {sub})")
-                    copied += 1
-                    continue
-                dest_proj.mkdir(parents=True, exist_ok=True)
-                try:
-                    shutil.copytree(sub, dest)
-                except OSError as e:
-                    print(f"  fail: copytree {sub} -> {dest}: {e}", file=sys.stderr)
-                    continue
-                # Strip ACL on every file in the new tree.
-                for root, _dirs, files in os.walk(dest):
-                    for name in files:
-                        strip_acl_and_make_writable(Path(root) / name)
-                if verbose:
-                    print(f"restore subdir {dest}")
+            dest = dest_proj / sub.name
+            if dest.exists():
+                continue
+            if dry_run:
+                print(f"would  subdir {dest} (from {sub})")
                 copied += 1
+                continue
+            dest_proj.mkdir(parents=True, exist_ok=True)
+            try:
+                shutil.copytree(sub, dest)
+            except OSError as e:
+                print(f"  fail: copytree {sub} -> {dest}: {e}", file=sys.stderr)
+                continue
+            for root, _dirs, files in os.walk(dest):
+                for name in files:
+                    strip_acl_and_make_writable(Path(root) / name)
+            if verbose:
+                print(f"restore subdir {dest}")
+            copied += 1
     return copied
 
 
@@ -410,52 +391,70 @@ def main() -> int:
     print(f"Found {len(snap_names)} snapshots.")
 
     pre_mounted = existing_mounts()
-    snapshots = [Snapshot(name=n) for n in snap_names]
+    # Walk snapshots newest-first. Timestamps are embedded in the snapshot
+    # name, so lexical sort works. Two reasons for the ordering:
+    #   1. JSONLs are append-only; the newest snapshot containing a given
+    #      (project, filename) holds the largest version. First sighting
+    #      wins, so we never copy a file we'll later overwrite.
+    #   2. restore_subdirs_from_snapshot uses first-writer-wins for
+    #      session subdirs (subagents/, memory/), matching the prior
+    #      all-at-end behavior.
+    snapshots = [Snapshot(name=n) for n in sorted(snap_names, reverse=True)]
 
-    # `try/finally` is our trap-replacement. Anything that mounts gets
-    # tracked on the Snapshot object; finally unmounts only what we own.
+    # Sequential mount → index → restore → unmount, one snapshot at a time.
+    # Earlier versions mounted every snapshot up front; that scaled poorly
+    # because macOS Spotlight spins up an mds_stores worker per mount as
+    # soon as it appears, and a TM drive can hold 75–150 snapshots. Holding
+    # one owned mount at a time bounds that to a single Spotlight worker
+    # for the duration of one snapshot's walk.
     tmp_root: Path | None = None
+    seen: set[tuple[str, str]] = set()
+    restored = 0
+    total_bytes = 0
+    skipped = 0
+    subdirs = 0
+    indexed_pairs = 0
     try:
         for snap in snapshots:
-            if snap.name in pre_mounted:
-                snap.mountpoint = pre_mounted[snap.name]
-                if args.verbose:
-                    print(f"using existing mount: {snap.name} -> {snap.mountpoint}")
-            else:
+            owned = snap.name not in pre_mounted
+            if owned:
                 if tmp_root is None:
                     tmp_root = Path(tempfile.mkdtemp(prefix="tm-claude-restore-"))
                 if args.verbose:
                     print(f"mounting {snap.name} under {tmp_root}")
-                mount_snapshot(snap, device, tmp_root)
+                if not mount_snapshot(snap, device, tmp_root):
+                    continue
+            else:
+                snap.mountpoint = pre_mounted[snap.name]
+                if args.verbose:
+                    print(f"using existing mount: {snap.name} -> {snap.mountpoint}")
 
-        # Index every mounted snapshot.
-        all_entries: list[JsonlEntry] = []
-        for snap in snapshots:
-            all_entries.extend(index_snapshot(snap, user, args.project, args.verbose))
+            try:
+                entries = index_snapshot(snap, user, args.project, args.verbose)
+                for entry in entries:
+                    key = (entry.project, entry.filename)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    indexed_pairs += 1
+                    ok, n = restore_file(entry, claude_dir, args.dry_run, args.verbose)
+                    if ok:
+                        restored += 1
+                        total_bytes += n
+                    else:
+                        skipped += 1
+                subdirs += restore_subdirs_from_snapshot(
+                    snap, user, claude_dir,
+                    args.project, args.include_memory,
+                    args.dry_run, args.verbose,
+                )
+            finally:
+                unmount_if_ours(snap)
 
-        if not all_entries:
+        if indexed_pairs == 0:
             die(f"No Claude JSONL files found in any snapshot for user '{user}'.")
 
-        best = pick_largest(all_entries)
-        print(f"Indexed {len(best)} unique (project, jsonl) pairs across snapshots.")
-
-        restored = 0
-        total_bytes = 0
-        skipped = 0
-        for entry in sorted(best.values(), key=lambda e: (e.project, e.filename)):
-            ok, n = restore_file(entry, claude_dir, args.dry_run, args.verbose)
-            if ok:
-                restored += 1
-                total_bytes += n
-            else:
-                skipped += 1
-
-        subdirs = restore_subdirs(
-            snapshots, user, claude_dir,
-            args.project, args.include_memory,
-            args.dry_run, args.verbose,
-        )
-
+        print(f"Indexed {indexed_pairs} unique (project, jsonl) pairs across snapshots.")
         print()
         prefix = "DRY RUN: would restore" if args.dry_run else "Restored"
         print(f"{prefix} {restored} file(s), {total_bytes} byte(s). "
@@ -463,8 +462,6 @@ def main() -> int:
         return 0
 
     finally:
-        for snap in snapshots:
-            unmount_if_ours(snap)
         if tmp_root is not None:
             try:
                 tmp_root.rmdir()
