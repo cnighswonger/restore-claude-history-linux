@@ -27,11 +27,15 @@ The upstream tool is macOS + APFS + Time Machine only. This port keeps the upstr
 
 ## GitHub bot identity
 
-All `gh` writes from this repo run under the **`vsits-restore-claude-builder[bot]`** App identity (cnighswonger-owned, single-repo scope), never under the operator's personal PAT for routine writes.
+Three bot identities write to this repo:
 
-**Exception — formal Codex reviews use a different bot.** When the formal `gh pr review` is posted per the "Codex review triggers" section below, that post runs under **`vsits-codex-review-agent[bot]`** (the cnighswonger-scoped Codex bot — slug `codex-reviewer` in `generate-token.sh`), not `vsits-restore-claude-builder[bot]`. This separates approval signals from author signals in the PR audit trail.
+- **`vsits-restore-claude-builder[bot]`** (slug `restore-claude-builder` in `generate-token.sh`) — the implementer. Authors PRs, pushes commits, posts PR/issue comments, edits PR bodies. cnighswonger-owned, single-repo scope.
+- **`vsits-codex-review-agent[bot]`** (slug `codex-reviewer` in `generate-token.sh`) — the Codex review bot. Posts ONLY formal `gh pr review` actions (see "Codex review triggers" below). Never authors PRs, never merges.
+- **`vsits-team-lead-agent[bot]`** (slug `team-lead` in `generate-token.sh`) — AI Team Lead identity. Used for repo seeding (label creation, branch creation, AGENTS.md edits during initial setup), label transitions (e.g., applying `approved-by-lead`, transitioning workflow stages), and cross-repo coordination. Should not be used as a routine implementer or reviewer.
 
 > The `codex-reviewer-vsits` slug in `generate-token.sh` is a different bot scoped to vsits-org repos only (`vsits/aegis`, etc.). For this repo, use `codex-reviewer` (no `-vsits` suffix).
+
+**Never use the operator's personal PAT for routine writes.** The only legitimate PAT uses are admin operations not delegated to a bot (e.g., creating the repo via fork, configuring branch protection, App management).
 
 **Token route on visits-01:**
 
@@ -97,6 +101,7 @@ PRs and issues progress through these labels (mirrors cache-fix/aegis pattern):
 | `implementation-stage` | Active implementation; code in progress |
 | `ready-for-merge` | Reviews complete, all checks green |
 | `blocked` | Waiting on external dependency or decision |
+| `needs-changes` | Reviewer requested changes; implementer iterates before re-review |
 | `approved-by-lead` | AI Team Lead approval gate satisfied |
 | `approved-by-codex-agent` | Codex review approval gate satisfied |
 | `needs-human-review` | Requires human review; full stop until cleared |
@@ -107,17 +112,19 @@ Plus priority (`P0`–`P3`) and backend scope (`backend:zfs`, `backend:btrfs`, e
 
 `needs-human-review` is structurally different from the other labels. The workflow labels (`directive-stage` → `plan-approved` → `implementation-stage` → `ready-for-merge`) describe linear stages; the approval-gate labels are additive; `blocked` and `needs-changes` describe waiting/iterating states that bots can still operate around. `needs-human-review` is a **hard stop**:
 
-**Bot behavior contract.** Any agent operating under this repo's bot identities (`vsits-restore-claude-builder[bot]`, `vsits-codex-review-agent[bot]`, `vsits-team-lead-agent[bot]`) MUST treat `needs-human-review` as a full stop. While the label is present on a PR or issue:
+**Bot behavior contract.** Any agent operating under this repo's bot identities (see "GitHub bot identity" section above for the full list) MUST treat `needs-human-review` as a full stop. While the label is present on a PR or issue:
 
 - Do not push commits to the PR's branch.
 - Do not change any labels (including approval gates and workflow stages).
 - Do not submit reviews (no `gh pr review --approve`, no `--request-changes`, no `--comment`).
+- Do not post comments (`gh pr comment`, `gh issue comment`).
+- Do not change assignees, reviewers, milestone, or any other metadata.
 - Do not transition workflow state.
 - Do not merge.
 - Do not close or reopen.
 - Do not edit the PR/issue body or title.
 
-Read-only inspection (viewing state, reading file contents, reading review history) is permitted; any write action is not. This applies even when other gate labels (`approved-by-lead`, `approved-by-codex-agent`) are present — `needs-human-review` overrides all approval signals.
+The enumeration above is illustrative; the rule is "**any write action is forbidden while this label is present.**" Read-only inspection (viewing state, reading file contents, reading review history, fetching the diff) is permitted. This applies even when other gate labels (`approved-by-lead`, `approved-by-codex-agent`) are present — `needs-human-review` overrides all approval signals.
 
 **Who applies it:** Any bot that encounters a question requiring human judgment (scope, security, license, architecture not covered by the directive) SHOULD apply this label and stop. Humans may also apply it manually to pause an in-flight PR.
 
