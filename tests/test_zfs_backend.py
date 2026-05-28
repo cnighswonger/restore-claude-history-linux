@@ -31,7 +31,14 @@ def test_is_available_true(monkeypatch):
     assert ZfsBackend().is_available() is True
 
 
+def _no_live_mounts(monkeypatch):
+    """Force the live mount table empty so tests exercise the property path."""
+    monkeypatch.setattr(ZfsBackend, "_live_mountpoints", lambda self: {})
+
+
 def test_discover_builds_snapshot_paths(monkeypatch):
+    _no_live_mounts(monkeypatch)
+
     def fake_zfs(args):
         if "filesystem" in args:
             return _cp("tank/home\t/home\ntank/data\t/data\n")
@@ -52,12 +59,14 @@ def test_discover_builds_snapshot_paths(monkeypatch):
     assert one.backend_state == {"dataset": "tank/home", "snapshot": "daily-1"}
 
 
-def test_discover_skips_legacy_and_none_mountpoints(monkeypatch):
+def test_discover_skips_unmounted_none_but_keeps_real(monkeypatch):
+    _no_live_mounts(monkeypatch)
+
     def fake_zfs(args):
         if "filesystem" in args:
-            return _cp("tank/legacy\tlegacy\ntank/none\tnone\ntank/home\t/home\n")
+            return _cp("tank/none\tnone\ntank/home\t/home\n")
         if "snapshot" in args:
-            return _cp("tank/legacy@s\ntank/none@s\ntank/home@s\n")
+            return _cp("tank/none@s\ntank/home@s\n")
         return _cp()
 
     monkeypatch.setattr(zfs_mod, "_zfs", fake_zfs)
@@ -65,12 +74,47 @@ def test_discover_skips_legacy_and_none_mountpoints(monkeypatch):
     assert [str(s.data_root) for s in snaps] == ["/home/.zfs/snapshot/s"]
 
 
+def test_discover_resolves_legacy_via_live_mount(monkeypatch):
+    # Round-1 HIGH fix: a legacy dataset whose ZFS property is "legacy" but
+    # which is actually mounted (per the live mount table) must be discovered.
+    monkeypatch.setattr(ZfsBackend, "_live_mountpoints",
+                        lambda self: {"tank/home": "/home"})
+
+    def fake_zfs(args):
+        if "filesystem" in args:
+            return _cp("tank/home\tlegacy\n")
+        if "snapshot" in args:
+            return _cp("tank/home@s\n")
+        return _cp()
+
+    monkeypatch.setattr(zfs_mod, "_zfs", fake_zfs)
+    snaps = ZfsBackend().discover()
+    assert [str(s.data_root) for s in snaps] == ["/home/.zfs/snapshot/s"]
+
+
+def test_live_mountpoints_parses_mountinfo(monkeypatch, tmp_path):
+    mountinfo = (
+        "24 30 0:22 / /proc rw,nosuid - proc proc rw\n"
+        "55 30 0:50 / /home rw - zfs tank/home rw\n"
+        "56 30 0:51 / /data rw,relatime - zfs tank/data rw\n"
+        "60 30 8:1 / /boot rw - ext4 /dev/sda1 rw\n"
+    )
+    mi = tmp_path / "mountinfo"
+    mi.write_text(mountinfo)
+    monkeypatch.setattr(zfs_mod.Path, "read_text", lambda self: mountinfo)
+    out = ZfsBackend()._live_mountpoints()
+    assert out == {"tank/home": "/home", "tank/data": "/data"}
+
+
 def test_discover_empty_when_zfs_fails(monkeypatch):
+    _no_live_mounts(monkeypatch)
     monkeypatch.setattr(zfs_mod, "_zfs", lambda args: _cp(returncode=1))
     assert ZfsBackend().discover() == []
 
 
 def test_discover_skips_dataset_without_mountpoint(monkeypatch):
+    _no_live_mounts(monkeypatch)
+
     # Snapshot whose dataset isn't in the filesystem listing is dropped.
     def fake_zfs(args):
         if "filesystem" in args:

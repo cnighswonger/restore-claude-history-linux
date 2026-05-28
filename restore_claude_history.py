@@ -162,14 +162,30 @@ def locate_projects_dir(data_root: Path, home: Path) -> Path | None:
       <data_root>/<user>/.claude/projects         (snapshot of /home)
       <data_root>/.claude/projects                (snapshot of /home/<user>)
     We try progressively shorter suffixes of the home path and return the
-    first that exists.
+    first that exists. Both the literal home path and its symlink-resolved form
+    are tried, so a home that is a symlink (e.g. /home/u -> /mnt/data/u, with a
+    snapshot of /mnt/data) still resolves.
     """
-    parts = home.parts
-    rel = list(parts[1:]) if parts and parts[0] == os.sep else list(parts)
-    for i in range(len(rel) + 1):
-        candidate = data_root.joinpath(*rel[i:], ".claude", "projects")
-        if candidate.is_dir():
-            return candidate
+    seen: set[str] = set()
+    candidate_homes = [home]
+    try:
+        resolved = home.resolve()
+    except OSError:
+        resolved = home
+    if resolved != home:
+        candidate_homes.append(resolved)
+
+    for h in candidate_homes:
+        parts = h.parts
+        rel = list(parts[1:]) if parts and parts[0] == os.sep else list(parts)
+        for i in range(len(rel) + 1):
+            candidate = data_root.joinpath(*rel[i:], ".claude", "projects")
+            key = str(candidate)
+            if key in seen:
+                continue
+            seen.add(key)
+            if candidate.is_dir():
+                return candidate
     return None
 
 
@@ -273,6 +289,18 @@ def restore_file(
     return (True, entry.size)
 
 
+def tree_size(path: Path) -> int:
+    """Total size of all regular files under `path` (recursively)."""
+    total = 0
+    for root, _dirs, files in os.walk(path):
+        for name in files:
+            try:
+                total += (Path(root) / name).stat().st_size
+            except OSError:
+                continue
+    return total
+
+
 def restore_subdirs(
     located: list[tuple[str, Path]],
     claude_dir: Path,
@@ -283,42 +311,51 @@ def restore_subdirs(
 ) -> int:
     """
     Restore per-session subdirs (subagents/, etc.) and optionally memory/.
-    Walks snapshots newest-first (lexical sort on snapshot name); first writer
-    wins. Skips dirs that already exist on disk.
+
+    For each (project, subdir) seen across snapshots, restore the **largest**
+    copy by total subtree size — the same "bigger == more complete" rule used
+    for the JSONLs themselves. This deliberately does NOT rely on snapshot-name
+    ordering, which is backend-defined and not guaranteed time-sortable (e.g.
+    ZFS ``dataset@snap9`` vs ``@snap10``). Skips subdirs already on disk.
     """
-    located_sorted = sorted(located, key=lambda t: t[0], reverse=True)
-    copied = 0
-    for _snap_name, projects in located_sorted:
+    # Collect candidate source dirs per (project, subdir-name).
+    candidates: dict[tuple[str, str], list[Path]] = {}
+    for _snap_name, projects in located:
         for proj_dir in projects.iterdir():
             if not proj_dir.is_dir():
                 continue
             if only_project and proj_dir.name != only_project:
                 continue
-            dest_proj = claude_dir / proj_dir.name
             for sub in proj_dir.iterdir():
                 if not sub.is_dir():
                     continue
                 if sub.name == "memory" and not include_memory:
                     continue
-                dest = dest_proj / sub.name
-                if dest.exists():
-                    continue
-                if dry_run:
-                    print(f"would  subdir {dest} (from {sub})")
-                    copied += 1
-                    continue
-                dest_proj.mkdir(parents=True, exist_ok=True)
-                try:
-                    shutil.copytree(sub, dest)
-                except OSError as e:
-                    print(f"  fail: copytree {sub} -> {dest}: {e}", file=sys.stderr)
-                    continue
-                for root, _dirs, files in os.walk(dest):
-                    for name in files:
-                        strip_acl_and_make_writable(Path(root) / name)
-                if verbose:
-                    print(f"restore subdir {dest}")
-                copied += 1
+                candidates.setdefault((proj_dir.name, sub.name), []).append(sub)
+
+    copied = 0
+    for (project, sub_name), sources in sorted(candidates.items()):
+        dest_proj = claude_dir / project
+        dest = dest_proj / sub_name
+        if dest.exists():
+            continue
+        best = max(sources, key=tree_size)
+        if dry_run:
+            print(f"would  subdir {dest} (from {best})")
+            copied += 1
+            continue
+        dest_proj.mkdir(parents=True, exist_ok=True)
+        try:
+            shutil.copytree(best, dest)
+        except OSError as e:
+            print(f"  fail: copytree {best} -> {dest}: {e}", file=sys.stderr)
+            continue
+        for root, _dirs, files in os.walk(dest):
+            for name in files:
+                strip_acl_and_make_writable(Path(root) / name)
+        if verbose:
+            print(f"restore subdir {dest}")
+        copied += 1
     return copied
 
 

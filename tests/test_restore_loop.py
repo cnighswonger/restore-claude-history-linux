@@ -53,6 +53,20 @@ def test_locate_projects_dir_missing(tmp_path):
     assert locate_projects_dir(tmp_path, Path("/home/user")) is None
 
 
+def test_locate_projects_dir_follows_symlinked_home(tmp_path):
+    # Round-1 MEDIUM fix: home is a symlink; snapshot exposes the resolved path.
+    real_home = tmp_path / "mnt" / "data" / "alice"
+    link_home = tmp_path / "home" / "alice"
+    link_home.parent.mkdir(parents=True)
+    real_home.mkdir(parents=True)
+    link_home.symlink_to(real_home)
+    # data_root is a snapshot of /mnt/data -> contains alice/.claude/projects
+    data_root = tmp_path / "snap_of_mnt_data"
+    target = data_root / "alice" / ".claude" / "projects"
+    target.mkdir(parents=True)
+    assert locate_projects_dir(data_root, link_home) == target
+
+
 # -------- index --------
 
 
@@ -106,6 +120,48 @@ def test_restore_skips_when_ondisk_is_larger(tmp_path):
     rc = run_restore(registry, Options(backend="auto", dest=dest))
     assert rc == 0
     assert (live / "a.jsonl").read_text() == "on-disk is already bigger"
+
+
+def _add_subdir(root: Path, sub_name: str, files: dict[str, bytes]) -> None:
+    sub = root / ".claude" / "projects" / PROJECT / sub_name
+    sub.mkdir(parents=True, exist_ok=True)
+    for name, content in files.items():
+        (sub / name).write_bytes(content)
+
+
+def test_restore_subdirs_picks_largest_subtree_not_lexical(tmp_path):
+    # Round-1 MEDIUM fix: the larger (more complete) subdir wins regardless of
+    # snapshot-name ordering. Snapshot A (processed first) has the SMALL copy.
+    s1 = make_snapshot(tmp_path / "s1", {"a.jsonl": (b"x", 1_600_000_000.0)})
+    s2 = make_snapshot(tmp_path / "s2", {"a.jsonl": (b"x", 1_600_000_000.0)})
+    _add_subdir(s1, "subagents", {"agent.json": b"small"})
+    _add_subdir(s2, "subagents", {"agent.json": b"a much larger agent body here"})
+
+    dest = tmp_path / "dest"
+    registry = [LocalDirBackend("local", roots=[s1, s2])]
+    rc = run_restore(registry, Options(backend="auto", dest=dest))
+    assert rc == 0
+    restored = dest / PROJECT / "subagents" / "agent.json"
+    assert restored.read_bytes() == b"a much larger agent body here"
+
+
+def test_restore_subdirs_memory_gated_by_flag(tmp_path):
+    s1 = make_snapshot(tmp_path / "s1", {"a.jsonl": (b"x", 1_600_000_000.0)})
+    _add_subdir(s1, "memory", {"note.md": b"remembered"})
+    dest = tmp_path / "dest"
+
+    # Without --include-memory, memory/ is skipped.
+    rc = run_restore([LocalDirBackend("local", roots=[s1])],
+                     Options(backend="auto", dest=dest))
+    assert rc == 0
+    assert not (dest / PROJECT / "memory").exists()
+
+    # With it, memory/ is restored.
+    dest2 = tmp_path / "dest2"
+    rc = run_restore([LocalDirBackend("local", roots=[s1])],
+                     Options(backend="auto", include_memory=True, dest=dest2))
+    assert rc == 0
+    assert (dest2 / PROJECT / "memory" / "note.md").read_bytes() == b"remembered"
 
 
 def test_restore_no_jsonl_anywhere_errors(tmp_path):
