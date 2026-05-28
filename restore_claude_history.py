@@ -16,6 +16,8 @@ with a pluggable backend abstraction. See docs/ and AGENTS.md for background.
 
 from __future__ import annotations
 
+__version__ = "1.0.0"
+
 import argparse
 import os
 import shutil
@@ -454,6 +456,7 @@ def parse_args(argv: list[str] | None = None) -> Options:
         description="Restore deleted Claude Code chat transcripts from "
                     "Linux filesystem snapshots.",
     )
+    p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     p.add_argument("--backend", default="auto",
                    choices=["zfs", "btrfs", "timeshift", "auto"],
                    help="snapshot backend to use (default: auto)")
