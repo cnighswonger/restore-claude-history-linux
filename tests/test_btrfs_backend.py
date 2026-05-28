@@ -40,69 +40,83 @@ def test_parse_rejects_non_id_and_pathless():
     assert _parse_subvol_line("ID 256 gen 30 top level 5") is None
 
 
-# -------- _reachable_path --------
+# -------- _candidate_paths --------
 
 
 def _mnt(source="/dev/sda2", mountpoint="/", root="/@"):
     return Mount(fstype="btrfs", source=source, mountpoint=mountpoint, root=root)
 
 
-def test_reachable_whole_fs_root():
+def test_candidates_whole_fs_root():
     mounts = [_mnt(mountpoint="/mnt/top", root="/")]
-    p, through = BtrfsBackend._reachable_path("@/.snapshots/1/snapshot", mounts)
-    assert str(p) == "/mnt/top/@/.snapshots/1/snapshot"
-    assert through == "/mnt/top"
+    cands = BtrfsBackend._candidate_paths("@/.snapshots/1/snapshot", mounts)
+    assert [str(p) for p in cands] == ["/mnt/top/@/.snapshots/1/snapshot"]
 
 
-def test_reachable_under_subvol_mount():
+def test_candidates_under_subvol_mount():
     mounts = [_mnt(mountpoint="/", root="/@")]
-    p, through = BtrfsBackend._reachable_path("@/.snapshots/1/snapshot", mounts)
-    assert str(p) == "/.snapshots/1/snapshot"
-    assert through == "/"
+    cands = BtrfsBackend._candidate_paths("@/.snapshots/1/snapshot", mounts)
+    assert [str(p) for p in cands] == ["/.snapshots/1/snapshot"]
 
 
-def test_reachable_exact_subvol():
+def test_candidates_exact_subvol():
     mounts = [_mnt(mountpoint="/srv", root="/@data")]
-    p, through = BtrfsBackend._reachable_path("@data", mounts)
-    assert str(p) == "/srv"
+    cands = BtrfsBackend._candidate_paths("@data", mounts)
+    assert [str(p) for p in cands] == ["/srv"]
 
 
-def test_reachable_prefers_deepest_subvol_mount():
-    # Both "/" (subvol @) and "/.snapshots" (subvol @/.snapshots) expose the
-    # snapshot; the more specific mount must win.
+def test_candidates_deepest_subvol_first():
+    # Both "/" (subvol @) and "/.snapshots" (subvol @/.snapshots) expose it;
+    # the more specific mount must be ordered first.
     mounts = [
         _mnt(mountpoint="/", root="/@"),
         _mnt(mountpoint="/.snapshots", root="/@/.snapshots"),
     ]
-    p, through = BtrfsBackend._reachable_path("@/.snapshots/1/snapshot", mounts)
-    assert str(p) == "/.snapshots/1/snapshot"
-    assert through == "/.snapshots"
+    cands = BtrfsBackend._candidate_paths("@/.snapshots/1/snapshot", mounts)
+    # Both resolve to the same on-disk path here, deepest-mount candidate first.
+    assert str(cands[0]) == "/.snapshots/1/snapshot"
 
 
-def test_unreachable_when_not_under_any_mount():
+def test_candidates_empty_when_not_under_any_mount():
     mounts = [_mnt(mountpoint="/", root="/@")]
-    assert BtrfsBackend._reachable_path("@home/.snapshots/2/snapshot", mounts) is None
+    assert BtrfsBackend._candidate_paths("@home/.snapshots/2/snapshot", mounts) == []
 
 
-# -------- _is_shadowed --------
+# -------- _topmost_covering / _is_visible --------
 
 
-def test_is_shadowed_by_foreign_overmount():
-    data_root = Path("/.snapshots/1/snapshot")
-    foreign = [Mount(fstype="ext4", source="/dev/sdb1",
-                     mountpoint="/.snapshots", root="/")]
-    assert BtrfsBackend._is_shadowed(data_root, "/", {"/"}, foreign) is True
+def test_topmost_covering_prefers_longest_mountpoint():
+    mounts = [_mnt(mountpoint="/", root="/@"),
+              Mount("ext4", "/dev/sdb1", "/.snapshots", "/")]
+    top = BtrfsBackend._topmost_covering("/.snapshots/1/snapshot", mounts)
+    assert top.mountpoint == "/.snapshots" and top.fstype == "ext4"
 
 
-def test_not_shadowed_by_same_fs_overmount():
-    data_root = Path("/.snapshots/1/snapshot")
-    same = [_mnt(mountpoint="/.snapshots", root="/@/.snapshots")]
-    assert BtrfsBackend._is_shadowed(data_root, "/", {"/", "/.snapshots"}, same) is False
+def test_topmost_covering_same_mountpoint_last_wins():
+    stacked = [_mnt(mountpoint="/.snapshots", root="/@/.snapshots"),
+               Mount("ext4", "/dev/sdb1", "/.snapshots", "/")]
+    top = BtrfsBackend._topmost_covering("/.snapshots/1/snapshot", stacked)
+    assert top.fstype == "ext4"  # later (stacked on top) wins
 
 
-def test_not_shadowed_when_no_deeper_mount():
-    data_root = Path("/.snapshots/1/snapshot")
-    assert BtrfsBackend._is_shadowed(data_root, "/", {"/"}, []) is False
+def test_not_visible_under_foreign_overmount():
+    fs_mounts = [_mnt(mountpoint="/", root="/@")]
+    foreign = [Mount("ext4", "/dev/sdb1", "/.snapshots", "/")]
+    assert BtrfsBackend._is_visible(Path("/.snapshots/1/snapshot"),
+                                    fs_mounts, foreign) is False
+
+
+def test_visible_under_same_fs_overmount():
+    fs_mounts = [_mnt(mountpoint="/", root="/@"),
+                 _mnt(mountpoint="/.snapshots", root="/@/.snapshots")]
+    assert BtrfsBackend._is_visible(Path("/.snapshots/1/snapshot"),
+                                    fs_mounts, fs_mounts) is True
+
+
+def test_visible_when_mount_table_empty():
+    fs_mounts = [_mnt(mountpoint="/", root="/@")]
+    assert BtrfsBackend._is_visible(Path("/.snapshots/1/snapshot"),
+                                    fs_mounts, []) is True
 
 
 # -------- is_available --------
@@ -209,6 +223,43 @@ def test_discover_skips_shadowed_snapshot(monkeypatch):
     monkeypatch.setattr(btrfs_mod, "_btrfs",
                         lambda args: _cp(_line("256", "@/.snapshots/1/snapshot") + "\n"))
     assert BtrfsBackend().discover() == []
+
+
+def test_discover_skips_when_chosen_mount_overmounted_same_path(monkeypatch):
+    # Round-2 HIGH: a foreign fs stacked at the SAME path as the chosen same-fs
+    # mount must be caught (not just deeper mounts).
+    monkeypatch.setattr(BtrfsBackend, "_fs_uuid", lambda self, mp: "U1")
+    monkeypatch.setattr(BtrfsBackend, "_btrfs_mounts", lambda self: [
+        _mnt(mountpoint="/", root="/@"),
+        _mnt(mountpoint="/.snapshots", root="/@/.snapshots"),
+    ])
+    monkeypatch.setattr(btrfs_mod, "read_all_mounts", lambda: [
+        _mnt(mountpoint="/", root="/@"),
+        _mnt(mountpoint="/.snapshots", root="/@/.snapshots"),
+        Mount("ext4", "/dev/sdb1", "/.snapshots", "/"),  # stacked on top, last
+    ])
+    monkeypatch.setattr(btrfs_mod, "_btrfs",
+                        lambda args: _cp(_line("256", "@/.snapshots/1/snapshot") + "\n"))
+    assert BtrfsBackend().discover() == []
+
+
+def test_discover_falls_back_to_shallower_visible_mount(monkeypatch):
+    # Round-2 HIGH: the most specific candidate (/a/x) is shadowed by a foreign
+    # overmount at /a; discovery must fall back to the reachable /@/x via "/".
+    monkeypatch.setattr(BtrfsBackend, "_fs_uuid", lambda self, mp: "U1")
+    monkeypatch.setattr(BtrfsBackend, "_btrfs_mounts", lambda self: [
+        _mnt(mountpoint="/a", root="/@"),
+        _mnt(mountpoint="/", root="/"),
+    ])
+    monkeypatch.setattr(btrfs_mod, "read_all_mounts", lambda: [
+        _mnt(mountpoint="/a", root="/@"),
+        Mount("ext4", "/dev/sdb1", "/a", "/"),  # overmounts /a, listed last
+        _mnt(mountpoint="/", root="/"),
+    ])
+    monkeypatch.setattr(btrfs_mod, "_btrfs",
+                        lambda args: _cp(_line("256", "@/x") + "\n"))
+    snaps = BtrfsBackend().discover()
+    assert [str(s.data_root) for s in snaps] == ["/@/x"]
 
 
 def test_fs_uuid_parses_filesystem_show(monkeypatch):

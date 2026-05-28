@@ -100,54 +100,57 @@ class BtrfsBackend(SnapshotBackend):
         return bool(self._btrfs_mounts())
 
     @staticmethod
-    def _reachable_path(
-        subvol_path: str, mounts: list[Mount]
-    ) -> tuple[Path, str] | None:
-        """Resolve a snapshot's fs-root-relative path to (data_root, through_mp).
+    def _candidate_paths(subvol_path: str, mounts: list[Mount]) -> list[Path]:
+        """Every on-disk path a same-fs mount could expose `subvol_path` at.
 
-        `mounts` are all current mounts of the snapshot's filesystem. We pick
-        the MOST SPECIFIC mount whose exposed subvolume (`mount.root`) is an
-        ancestor of the snapshot — i.e. the longest matching root — so the
-        resolved path traverses the fewest intermediate mounts:
+        `mounts` are all mounts of the snapshot's filesystem; for each, `root`
+        is the subvolume exposed at `mountpoint`:
           - root "/" (whole fs root mounted) -> <mountpoint>/<subvol_path>
           - root "/@" exposing subvol "@", snapshot "@/.snapshots/1/snapshot"
             -> <mountpoint>/.snapshots/1/snapshot
-        Returns (data_root, mountpoint-used) or None when no mount of this
-        filesystem exposes the snapshot.
+        Ordered MOST SPECIFIC first (longest matching root), so the caller
+        prefers the deepest same-fs mount but can fall back to a shallower one
+        if a more specific candidate turns out to be shadowed.
         """
         p = subvol_path.strip("/")
-        # Longest root first: prefer the deepest same-fs subvolume mount.
+        out: list[Path] = []
         for m in sorted(mounts, key=lambda m: len(m.root.strip("/")), reverse=True):
             r = m.root.strip("/")
             if r == "":
-                return Path(m.mountpoint) / p, m.mountpoint
-            if p == r:
-                return Path(m.mountpoint), m.mountpoint
-            if p.startswith(r + "/"):
-                return Path(m.mountpoint) / p[len(r) + 1:], m.mountpoint
-        return None
+                out.append(Path(m.mountpoint) / p)
+            elif p == r:
+                out.append(Path(m.mountpoint))
+            elif p.startswith(r + "/"):
+                out.append(Path(m.mountpoint) / p[len(r) + 1:])
+        return out
 
     @staticmethod
-    def _is_shadowed(
-        data_root: Path, through_mp: str, same_fs_mps: set[str],
-        all_mounts: list[Mount],
-    ) -> bool:
-        """True if a foreign filesystem is overmounted between through_mp and
-        data_root, masking the snapshot's bytes.
+    def _topmost_covering(path: str, all_mounts: list[Mount]) -> Mount | None:
+        """The mount that is effectively visible at `path`.
 
-        A mount shadows data_root when its mountpoint lies on the path from
-        through_mp down to data_root (deeper than through_mp, an ancestor of
-        data_root) and it does NOT belong to this Btrfs filesystem.
+        The covering mount is the one with the longest mountpoint that is an
+        ancestor-or-equal of `path`; among mounts stacked at the SAME
+        mountpoint, the one listed last in mountinfo wins (it is on top).
+        Returns None when nothing covers `path` (only possible with an empty
+        mount table, i.e. in tests).
         """
-        dr = str(data_root)
+        best: Mount | None = None
+        best_len = -1
         for m in all_mounts:
             mp = m.mountpoint
-            if len(mp) <= len(through_mp):
-                continue
-            if dr == mp or dr.startswith(mp.rstrip("/") + "/"):
-                if mp not in same_fs_mps:
-                    return True
-        return False
+            if path == mp or path.startswith(mp.rstrip("/") + "/"):
+                # >= so a later same-mountpoint (stacked) mount overrides.
+                if len(mp) >= best_len:
+                    best, best_len = m, len(mp)
+        return best
+
+    @classmethod
+    def _is_visible(cls, data_root: Path, fs_mounts: list[Mount],
+                    all_mounts: list[Mount]) -> bool:
+        """True if `data_root`'s bytes belong to this filesystem (not masked by
+        a foreign mount stacked on or below the chosen mount)."""
+        top = cls._topmost_covering(str(data_root), all_mounts)
+        return top is None or top in fs_mounts
 
     def discover(self) -> list[DiscoveredSnapshot]:
         mounts = self._btrfs_mounts()
@@ -165,7 +168,6 @@ class BtrfsBackend(SnapshotBackend):
         snaps: list[DiscoveredSnapshot] = []
         seen: set[str] = set()
         for fs_mounts in by_fs.values():
-            same_fs_mps = {m.mountpoint for m in fs_mounts}
             r = _btrfs(["subvolume", "list", "-s", fs_mounts[0].mountpoint])
             if r.returncode != 0:
                 continue
@@ -173,11 +175,14 @@ class BtrfsBackend(SnapshotBackend):
                 parsed = _parse_subvol_line(line)
                 if parsed is None:
                     continue
-                resolved = self._reachable_path(parsed["path"], fs_mounts)
-                if resolved is None:
-                    continue
-                data_root, through_mp = resolved
-                if self._is_shadowed(data_root, through_mp, same_fs_mps, all_mounts):
+                # First candidate (deepest mount first) that is actually
+                # visible — i.e. not masked by a foreign overmount.
+                data_root = next(
+                    (c for c in self._candidate_paths(parsed["path"], fs_mounts)
+                     if self._is_visible(c, fs_mounts, all_mounts)),
+                    None,
+                )
+                if data_root is None:
                     continue
                 key = str(data_root)
                 if key in seen:
