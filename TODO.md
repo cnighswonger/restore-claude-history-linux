@@ -38,16 +38,28 @@ Shipped sequential mount → index → restore → unmount in v1.0.1. Walks snap
 
 Why ship anyway: real reduction in concurrent worker count, simpler control flow, and the in-loop dedupe is a structural win regardless of Spotlight. Patch-version-only because the user-visible "CPU goes nuts when TM is plugged in" pain is still mostly there.
 
-## Quiet Spotlight on snapshot mounts (v1.1)
+## ~~Local APFS snapshots as a primary recovery source~~ (shipped v1.1.0, 2026-05-28)
 
-Real target: stop the post-unmount mdworker_shared / CGPDFService storm documented above. NOTES.md gotcha line says `mdutil -i off` "reports success but the index restarts" — likely tried naively in a past session. Worth revisiting more carefully:
+Shipped `--source=local|tm|both` (default `both`) in v1.1.0. With no TM drive plugged in, `find_tm_device()` now falls through silently and the script proceeds against local snapshots on `/System/Volumes/Data`. `find_data_root` handles the local-snapshot mountpoint layout (`<mp>/Users/...`, no `Data/` wrapper). Sequential mount loop merges both pools and sorts newest-first across the union; the `seen` dedupe still applies.
+
+Bonus discovery: **mounting a local-volume snapshot does NOT trigger Spotlight reindex** — verified zero new mdworker_shared/CGPDFService workers post-mount (vs ~12+5 from a TM-drive mount). Apparently the live Data volume's existing index already covers the snapshot's blocks via APFS COW. So the local-snapshot path is both drive-free *and* Spotlight-quiet, captured in NOTES.md.
+
+Reality check on coverage: Apple docs claim "hourly local snapshots, retained 24h," but that retention only kicks in if Time Machine runs automatically. Maintainer backs up manually and rarely — exactly one local snapshot exists on his machine, dated 2026-04-24, the date of his last manual backup. For users like him, local snapshots are "one extra recent safety net" rather than "rolling 24h coverage." Still useful — that snapshot caught everything he'd lost between then and the recovery work — just not the deep history.
+
+Also shipped alongside: `--list-only` flag for machine-readable preview, and the test harness (`verify_restore.py`) now uses it to pick test files from the intersection of (on-disk) ∩ (in-snapshot) and assert restored size + mtime match the snapshot's, not the live file's.
+
+## Quiet Spotlight on snapshot mounts (v1.2)
+
+Real target: stop the post-unmount mdworker_shared / CGPDFService storm documented in v1.0.1's notes above. Deprioritized to v1.2 because local-snapshot support (v1.1) likely makes this a non-issue for the common case — most users won't even mount the TM drive once local snapshots cover recent deletions. Still worth fixing for the deep-history path.
+
+NOTES.md gotcha line says `mdutil -i off` "reports success but the index restarts" — likely tried naively in a past session. Worth revisiting more carefully:
 
 - `mdutil -i off <mountpoint>` called *immediately* after `mount_apfs`, before the walk. Confirm whether the "index restarts" behavior is on next mount or in-place.
 - `.metadata_never_index` and `.metadata_never_index_unless_rootfs` placed at the mountpoint root before walking. NOTES.md says these "do nothing" — verify against current macOS; the docs may have been written against an older OS version.
 - Mount options: `mount_apfs -o noexec,noatime` etc. — see if there's a noindex equivalent.
-- Last resort: `tmutil addexclusion -p <mountpoint>` or Spotlight Privacy plist injection.
+- Last resort: `tmutil addexclusion -p <mountpoint>` or Spotlight Privacy plist injection (sudo, persists across mounts — surprises users, document loudly).
 
-When shipping: bump `__version__` to `1.1.0`, tag `v1.1.0`. Per CLAUDE.md, in-script version and latest git tag must match. README should mention the Spotlight fix in the changelog/intro if it materially changes the user experience on high-snapshot drives.
+When shipping: bump `__version__` to `1.2.0`, tag `v1.2.0`. Per CLAUDE.md, in-script version and latest git tag must match.
 
 ## Claude Desktop session recovery
 
