@@ -99,8 +99,29 @@ PRs and issues progress through these labels (mirrors cache-fix/aegis pattern):
 | `blocked` | Waiting on external dependency or decision |
 | `approved-by-lead` | AI Team Lead approval gate satisfied |
 | `approved-by-codex-agent` | Codex review approval gate satisfied |
+| `needs-human-review` | Requires human review; full stop until cleared |
 
 Plus priority (`P0`–`P3`) and backend scope (`backend:zfs`, `backend:btrfs`, etc.). See `gh label list --repo cnighswonger/restore-claude-history-linux` for the full set.
+
+### `needs-human-review` — escalation lock semantics
+
+`needs-human-review` is structurally different from the other labels. The workflow labels (`directive-stage` → `plan-approved` → `implementation-stage` → `ready-for-merge`) describe linear stages; the approval-gate labels are additive; `blocked` and `needs-changes` describe waiting/iterating states that bots can still operate around. `needs-human-review` is a **hard stop**:
+
+**Bot behavior contract.** Any agent operating under this repo's bot identities (`vsits-restore-claude-builder[bot]`, `vsits-codex-review-agent[bot]`, `vsits-team-lead-agent[bot]`) MUST treat `needs-human-review` as a full stop. While the label is present on a PR or issue:
+
+- Do not push commits to the PR's branch.
+- Do not change any labels (including approval gates and workflow stages).
+- Do not submit reviews (no `gh pr review --approve`, no `--request-changes`, no `--comment`).
+- Do not transition workflow state.
+- Do not merge.
+- Do not close or reopen.
+- Do not edit the PR/issue body or title.
+
+Read-only inspection (viewing state, reading file contents, reading review history) is permitted; any write action is not. This applies even when other gate labels (`approved-by-lead`, `approved-by-codex-agent`) are present — `needs-human-review` overrides all approval signals.
+
+**Who applies it:** Any bot that encounters a question requiring human judgment (scope, security, license, architecture not covered by the directive) SHOULD apply this label and stop. Humans may also apply it manually to pause an in-flight PR.
+
+**Who clears it:** Only humans. Bots MUST NOT remove this label under any circumstances, even when they believe the underlying concern has been addressed.
 
 ## Boundary discipline (what this tool is NOT)
 
