@@ -90,6 +90,23 @@ GH_TOKEN=$TOKEN gh pr review <PR#> --repo $REPO --comment --body "<codex finding
 
 **The final round must be `--approve` when Codex's verdict is approve, even with non-blocking nits.** A `--comment` review — regardless of body content — registers as state `COMMENTED` in GitHub's review-decision UI and does NOT check off the formal-review gate. Only `--approve` produces state `APPROVED`. If Codex's verdict is "block" or "request_changes," use `--request-changes` (which produces state `CHANGES_REQUESTED`).
 
+## Code quality — non-functional requirements & anti-bloat
+
+LLM-written code reliably satisfies functional requirements and neglects non-functional ones — security, maintainability, and especially size/complexity. These rules add the missing lens. (Canonical cross-repo standard maintained by the Project Lead.)
+
+**Directives created or materially revised after this policy must include a `## Non-Functional Requirements` section** (after Goal/Background, before scope; existing directives are grandfathered until their next material revision) — a short fixed checklist, a line or two each; `n/a` is valid except for **Load-bearing?**, which is a required yes/no:
+
+- **Size/complexity budget** — qualitative trigger: rough expected size (LOC and/or module count); review flags an implementation that lands materially larger (≈2×) than anticipated.
+- **Threat model** — inputs, trust boundaries, what must never leak or execute.
+- **Maintainability constraints** — new abstractions require explicit justification (repeated use, ≈3+ call sites, or concrete near-term reuse), else inline; no dead code; no defensive handling for impossible cases; no back-compat shims unless required.
+- **Performance/reliability** — only where it applies.
+- **Load-bearing?** (required yes/no) — yes if it touches a shared abstraction, a cross-package/wire contract, or anything security-relevant.
+
+**Anti-bloat review lens.** Alongside correctness, reviewers flag bloat that is (a) clearly larger/more complex than requirements justify AND (b) safe to simplify without changing behavior, stating the magnitude (e.g. a 100-line switch reducible to one line). Hunt: over-abstraction, dead code, copy-paste duplication, unnecessary state machines, defensive handling for impossible cases. Do not flag complexity that exists for a real reason, and never assert a simplification is safe when you cannot verify it is behavior-preserving. Bloat is advisory unless it causes a correctness problem. Also flag a missing/empty NFR section, and validate the `Load-bearing?` declaration against its criteria.
+
+**Human backstop.** When `Load-bearing?` is **yes**, Chris's review is part of the required review set: do not apply the `ready-for-merge` state (or merge) until he has signed off. This adds a required approver — it is **not** the `needs-human-review` hard-stop, so bots continue normal review and labeling (no conflict with the Codex review post). Rationale: the independent reviewer and the Lead are both LLMs with correlated blind spots. Routine leaf code rides on Lead + Codex.
+
+
 ## Label state machine
 
 PRs and issues progress through these labels (mirrors cache-fix/aegis pattern):
