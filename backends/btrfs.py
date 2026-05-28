@@ -100,28 +100,36 @@ class BtrfsBackend(SnapshotBackend):
         return bool(self._btrfs_mounts())
 
     @staticmethod
-    def _candidate_paths(subvol_path: str, mounts: list[Mount]) -> list[Path]:
-        """Every on-disk path a same-fs mount could expose `subvol_path` at.
+    def _resolve_through(p: str, m: Mount) -> Path | None:
+        """On-disk path where mount `m` exposes fs-root-relative subvol path `p`
+        (already stripped of leading "/"), or None if `m`'s subvolume isn't an
+        ancestor of `p`.
 
-        `mounts` are all mounts of the snapshot's filesystem; for each, `root`
-        is the subvolume exposed at `mountpoint`:
-          - root "/" (whole fs root mounted) -> <mountpoint>/<subvol_path>
-          - root "/@" exposing subvol "@", snapshot "@/.snapshots/1/snapshot"
+          - root "/" (whole fs root mounted) -> <mountpoint>/<p>
+          - root "/@" exposing subvol "@", p "@/.snapshots/1/snapshot"
             -> <mountpoint>/.snapshots/1/snapshot
-        Ordered MOST SPECIFIC first (longest matching root), so the caller
-        prefers the deepest same-fs mount but can fall back to a shallower one
-        if a more specific candidate turns out to be shadowed.
         """
+        r = m.root.strip("/")
+        if r == "":
+            return Path(m.mountpoint) / p
+        if p == r:
+            return Path(m.mountpoint)
+        if p.startswith(r + "/"):
+            return Path(m.mountpoint) / p[len(r) + 1:]
+        return None
+
+    @classmethod
+    def _candidate_paths(cls, subvol_path: str, mounts: list[Mount]) -> list[Path]:
+        """Every on-disk path a same-fs mount could expose `subvol_path` at,
+        MOST SPECIFIC first (longest matching root), so the caller prefers the
+        deepest same-fs mount but can fall back to a shallower one when a more
+        specific candidate turns out to be shadowed."""
         p = subvol_path.strip("/")
         out: list[Path] = []
         for m in sorted(mounts, key=lambda m: len(m.root.strip("/")), reverse=True):
-            r = m.root.strip("/")
-            if r == "":
-                out.append(Path(m.mountpoint) / p)
-            elif p == r:
-                out.append(Path(m.mountpoint))
-            elif p.startswith(r + "/"):
-                out.append(Path(m.mountpoint) / p[len(r) + 1:])
+            dr = cls._resolve_through(p, m)
+            if dr is not None:
+                out.append(dr)
         return out
 
     @staticmethod
@@ -145,12 +153,22 @@ class BtrfsBackend(SnapshotBackend):
         return best
 
     @classmethod
-    def _is_visible(cls, data_root: Path, fs_mounts: list[Mount],
-                    all_mounts: list[Mount]) -> bool:
-        """True if `data_root`'s bytes belong to this filesystem (not masked by
-        a foreign mount stacked on or below the chosen mount)."""
+    def _is_visible(cls, data_root: Path, subvol_path: str,
+                    fs_mounts: list[Mount], all_mounts: list[Mount]) -> bool:
+        """True if `data_root` actually shows the snapshot's bytes.
+
+        Requires the topmost mount covering `data_root` to (a) belong to this
+        filesystem and (b) expose the snapshot's subvolume such that resolving
+        `subvol_path` through it reproduces `data_root`. (b) rules out a same-fs
+        mount of a DIFFERENT subvolume stacked on the path, which would point
+        `data_root` at the wrong subvolume's bytes.
+        """
         top = cls._topmost_covering(str(data_root), all_mounts)
-        return top is None or top in fs_mounts
+        if top is None:
+            return True
+        if top not in fs_mounts:
+            return False
+        return cls._resolve_through(subvol_path.strip("/"), top) == data_root
 
     def discover(self) -> list[DiscoveredSnapshot]:
         mounts = self._btrfs_mounts()
@@ -179,7 +197,7 @@ class BtrfsBackend(SnapshotBackend):
                 # visible — i.e. not masked by a foreign overmount.
                 data_root = next(
                     (c for c in self._candidate_paths(parsed["path"], fs_mounts)
-                     if self._is_visible(c, fs_mounts, all_mounts)),
+                     if self._is_visible(c, parsed["path"], fs_mounts, all_mounts)),
                     None,
                 )
                 if data_root is None:

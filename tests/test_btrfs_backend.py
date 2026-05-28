@@ -103,19 +103,33 @@ def test_not_visible_under_foreign_overmount():
     fs_mounts = [_mnt(mountpoint="/", root="/@")]
     foreign = [Mount("ext4", "/dev/sdb1", "/.snapshots", "/")]
     assert BtrfsBackend._is_visible(Path("/.snapshots/1/snapshot"),
+                                    "@/.snapshots/1/snapshot",
                                     fs_mounts, foreign) is False
 
 
-def test_visible_under_same_fs_overmount():
+def test_visible_under_same_fs_overmount_same_subvol():
+    # /.snapshots exposes @/.snapshots (the snapshot's own parent subvol).
     fs_mounts = [_mnt(mountpoint="/", root="/@"),
                  _mnt(mountpoint="/.snapshots", root="/@/.snapshots")]
     assert BtrfsBackend._is_visible(Path("/.snapshots/1/snapshot"),
+                                    "@/.snapshots/1/snapshot",
                                     fs_mounts, fs_mounts) is True
+
+
+def test_not_visible_under_same_fs_overmount_different_subvol():
+    # /.snapshots exposes a DIFFERENT subvol (@other); the candidate path would
+    # point into the wrong subvol -> not visible.
+    fs_mounts = [_mnt(mountpoint="/", root="/@"),
+                 _mnt(mountpoint="/.snapshots", root="/@other")]
+    assert BtrfsBackend._is_visible(Path("/.snapshots/1/snapshot"),
+                                    "@/.snapshots/1/snapshot",
+                                    fs_mounts, fs_mounts) is False
 
 
 def test_visible_when_mount_table_empty():
     fs_mounts = [_mnt(mountpoint="/", root="/@")]
     assert BtrfsBackend._is_visible(Path("/.snapshots/1/snapshot"),
+                                    "@/.snapshots/1/snapshot",
                                     fs_mounts, []) is True
 
 
@@ -260,6 +274,24 @@ def test_discover_falls_back_to_shallower_visible_mount(monkeypatch):
                         lambda args: _cp(_line("256", "@/x") + "\n"))
     snaps = BtrfsBackend().discover()
     assert [str(s.data_root) for s in snaps] == ["/@/x"]
+
+
+def test_discover_falls_back_when_overmount_is_different_subvol(monkeypatch):
+    # Round-3 HIGH: /.snapshots exposes a DIFFERENT subvol (@other), so the
+    # candidate /.snapshots/1/snapshot points into the wrong subvol. Discovery
+    # must reject it and fall back to the whole-fs-root mount /mnt/top.
+    monkeypatch.setattr(BtrfsBackend, "_fs_uuid", lambda self, mp: "U1")
+    fs_mounts = [
+        _mnt(mountpoint="/", root="/@"),
+        _mnt(mountpoint="/.snapshots", root="/@other"),
+        _mnt(mountpoint="/mnt/top", root="/"),
+    ]
+    monkeypatch.setattr(BtrfsBackend, "_btrfs_mounts", lambda self: fs_mounts)
+    monkeypatch.setattr(btrfs_mod, "read_all_mounts", lambda: fs_mounts)
+    monkeypatch.setattr(btrfs_mod, "_btrfs",
+                        lambda args: _cp(_line("256", "@/.snapshots/1/snapshot") + "\n"))
+    snaps = BtrfsBackend().discover()
+    assert [str(s.data_root) for s in snaps] == ["/mnt/top/@/.snapshots/1/snapshot"]
 
 
 def test_fs_uuid_parses_filesystem_show(monkeypatch):
