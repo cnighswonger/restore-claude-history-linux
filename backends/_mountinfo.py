@@ -30,16 +30,17 @@ def unescape(field: str) -> str:
 class Mount:
     """One mountinfo entry, restricted to the fields backends need."""
 
+    fstype: str       # filesystem type (e.g. "zfs", "btrfs", "ext4")
     source: str       # mount source: device (/dev/sda2) or dataset (tank/home)
     mountpoint: str   # absolute path the fs is mounted at (octal-unescaped)
     root: str         # subvolume/root path within the fs (mountinfo field 4)
 
 
-def mounts_of_fstype(fstype: str, *, path: Path | None = None) -> list[Mount]:
-    """Return every current mount of `fstype` from /proc/self/mountinfo.
+def read_all_mounts(*, path: Path | None = None) -> list[Mount]:
+    """Return every mountinfo entry (all filesystem types).
 
     `path` overrides the mountinfo source (tests only). Returns [] if the file
-    cannot be read.
+    cannot be read. Source/mountpoint/root are octal-unescaped.
     """
     src = path or _MOUNTINFO
     try:
@@ -57,11 +58,15 @@ def mounts_of_fstype(fstype: str, *, path: Path | None = None) -> list[Mount]:
         post = line[sep + 3:].split()
         if len(pre) < 5 or len(post) < 2:
             continue
-        if post[0] != fstype:
-            continue
         result.append(Mount(
-            source=post[1],
+            fstype=post[0],
+            source=unescape(post[1]),
             mountpoint=unescape(pre[4]),
             root=unescape(pre[3]),
         ))
     return result
+
+
+def mounts_of_fstype(fstype: str, *, path: Path | None = None) -> list[Mount]:
+    """Return every current mount of `fstype` from /proc/self/mountinfo."""
+    return [m for m in read_all_mounts(path=path) if m.fstype == fstype]
