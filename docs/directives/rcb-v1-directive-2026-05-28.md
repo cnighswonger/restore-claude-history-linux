@@ -16,6 +16,7 @@
   - Finding 3 (MED): Phase 1 includes ZFS as the first real backend wired end-to-end.
   - Finding 4 (LOW): v1.1 backend stubs removed from file layout; future backends documented in directive + backend-authoring docs only.
   - Finding 5 (LOW): AGENTS.md gets distinct `--approve` / `--request-changes` / `--comment` examples; bot name reference corrected.
+- **v3 (2026-05-28):** Codex Round 2 addressed — the Round 1 fix to Finding 1 introduced an internal contradiction (Phase 2 supposedly ships Btrfs with Timeshift-skip logic; Phase 3 supposedly wires up the skip — incompatible). Moved overlap resolution from per-backend `discover()` into the orchestrator, where the overlap-resolution table is a single source of truth and skip rules only fire when the owning backend is actually registered. ABC docstring, overlap section, and Phase 2/3 descriptions now consistent.
 
 ## Goal
 
@@ -78,7 +79,16 @@ When the same physical snapshots are visible to multiple backends, the directive
 | Bare Btrfs subvolumes (no Timeshift/Snapper management) | `btrfs` | No higher-layer config exists |
 | Bare ZFS snapshots | `zfs` | No overlap with other v1 backends |
 
-Each backend's `discover()` implementation is responsible for skipping paths claimed by a higher-layer backend, even if the higher-layer backend isn't implemented yet (so v1's `btrfs.discover()` knows to skip Timeshift paths). This keeps the ambiguity-error case ("multiple backends find candidates") rare in practice while preserving fail-loud semantics when it does happen.
+**The orchestrator applies the overlap-resolution table after discovery completes.** Each backend's `discover()` reports what its tooling reports — no backend needs to know about its peers. After all backends have returned their `DiscoveredSnapshot` lists, the orchestrator deduplicates by walking the table above: for each `(owner, claimed-path-pattern)` entry where the owner backend IS in the registered + available set, the orchestrator removes matching snapshots from other backends' lists.
+
+This design choice is deliberate (per Codex Round 2):
+
+- **Backends stay independent** — no `btrfs.py` import of Timeshift internals, no "skip this path because some-future-backend might claim it" logic.
+- **Skip rules only fire when the owning backend is actually present.** In Phase 2 (Btrfs only, Timeshift not yet implemented), Btrfs's results stand as-is — no false zero-match risk on a Timeshift-on-Btrfs host before Timeshift backend lands; the host gets results, possibly with duplicates that the eventual Phase 3 will resolve.
+- **The overlap table is the single source of truth** — changes happen in one place (orchestrator) when a new backend is added, not scattered across every existing backend's `discover()`.
+- **The ambiguity-error case stays rare in practice** once Phase 3 lands and the orchestrator deduplicates; pre-Phase-3, Btrfs and Timeshift can co-discover the same paths but only Btrfs is implemented, so no ambiguity surfaces yet.
+
+The previous v1 draft of this section assigned skip-responsibility to each backend's `discover()` and required `btrfs.discover()` to skip Timeshift paths "even when the higher-layer backend isn't implemented yet." That was internally inconsistent with the phase plan (which expected Btrfs to ship with skip logic in Phase 2 and the skip behavior to actually function in Phase 3) and risked false zero-matches. The orchestrator-side deduplication resolves both issues.
 
 ## File layout
 
@@ -147,9 +157,10 @@ class SnapshotBackend(ABC):
     def discover(self) -> list[DiscoveredSnapshot]:
         """Find all snapshots this backend can reach.
 
-        Implementations MUST skip paths owned by higher-layer backends per
-        the directive's overlap-resolution rules, even when the higher-layer
-        backend is not yet implemented.
+        Implementations report what their tooling reports — no
+        cross-backend overlap handling here. The orchestrator deduplicates
+        across backends after discovery using the directive's
+        overlap-resolution table (see "Backend-overlap resolution rules").
 
         For snapshot mechanisms where snapshots are auto-mounted (ZFS),
         return them with needs_mount=False. For mechanisms requiring
@@ -232,9 +243,9 @@ Real-backend tests requiring real filesystems and (for ZFS) kernel modules. NOT 
 
    *Rationale:* Codex's medium-severity phasing concern is correct — abstractions without a real consumer don't get pressure-tested. ZFS is the cleanest first-real-backend (auto-mount, no overlap with other v1 backends, well-defined `zfs list` output).
 
-2. **Phase 2 — Btrfs adapter.** Adds `backends/btrfs.py` with Timeshift-skip logic. Tests: Layer 1 (Btrfs `discover()` mock subprocess), Layer 2 (n/a — covered by Phase 1's LocalDirBackend tests), Layer 3 opt-in. PR target: `feature/rcb-v1` (parent branch).
+2. **Phase 2 — Btrfs adapter.** Adds `backends/btrfs.py` reporting raw `btrfs subvolume list -s` output. No overlap handling in this PR — orchestrator-side deduplication doesn't fire yet because Timeshift backend isn't registered. Tests: Layer 1 (Btrfs `discover()` mock subprocess), Layer 3 opt-in. PR target: `feature/rcb-v1` (parent branch).
 
-3. **Phase 3 — Timeshift adapter.** Adds `backends/timeshift.py`; updates `btrfs.discover()` to actually skip Timeshift paths (so far it's a no-op). PR target: `feature/rcb-v1`.
+3. **Phase 3 — Timeshift adapter + orchestrator deduplication.** Adds `backends/timeshift.py` AND wires the orchestrator's overlap-resolution pass. This is the PR where Timeshift-on-Btrfs hosts get correct results (Timeshift owns the snapshots; Btrfs results filtered post-discovery). Tests: Layer 1 (Timeshift `discover()` mock + orchestrator overlap-resolution unit tests covering Timeshift-on-Btrfs scenario), Layer 3 opt-in. PR target: `feature/rcb-v1`.
 
 4. **Phase 4 — README rewrite + cross-reference PR upstream.** README pivots to Linux. AI Team Lead opens cross-reference PR against `garrettmoss/restore-claude-history`'s README for the "See also" wire-up. PR target: `main`.
 
