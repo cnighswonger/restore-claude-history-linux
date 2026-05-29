@@ -65,14 +65,34 @@ def count_procs() -> tuple[dict[str, int], dict[str, float]]:
     return counts, pcts
 
 
+def _col_widths() -> list[int]:
+    """Width per column: phase(14) elapsed(8), then one slot per bucket
+    sized to fit the wider of '<bucket>_n' / '<bucket>_pct' headers."""
+    widths = [14, 8]
+    for b in BUCKETS:
+        widths.append(max(len(f"{b}_n"), 5))
+    for b in BUCKETS:
+        widths.append(max(len(f"{b}_pct"), 6))
+    return widths
+
+
+def _fmt_row(cells: list[str]) -> str:
+    widths = _col_widths()
+    # First two cols left-aligned, the rest right-aligned (numeric).
+    parts = [f"{cells[0]:<{widths[0]}}", f"{cells[1]:<{widths[1]}}"]
+    for cell, w in zip(cells[2:], widths[2:]):
+        parts.append(f"{cell:>{w}}")
+    return "  ".join(parts)
+
+
 def sample(label: str, t0: float) -> None:
-    """Emit one TSV row: phase, elapsed, count cols, then %cpu cols."""
+    """Emit one fixed-width row: phase, elapsed, count cols, then %cpu cols."""
     elapsed = time.monotonic() - t0
     c, p = count_procs()
-    row = [label, f"{elapsed:.2f}"]
-    row += [str(c[b]) for b in BUCKETS]
-    row += [f"{p[b]:.1f}" for b in BUCKETS]
-    print("\t".join(row), flush=True)
+    cells = [label, f"{elapsed:.2f}"]
+    cells += [str(c[b]) for b in BUCKETS]
+    cells += [f"{p[b]:.1f}" for b in BUCKETS]
+    print(_fmt_row(cells), flush=True)
 
 
 def sample_series(label: str, t0: float, offsets: list[float]) -> None:
@@ -148,7 +168,7 @@ def main() -> int:
     cols = ["phase", "elapsed_s"]
     cols += [f"{b}_n" for b in BUCKETS]
     cols += [f"{b}_pct" for b in BUCKETS]
-    print("\t".join(cols), flush=True)
+    print(_fmt_row(cols), flush=True)
 
     if args.idle:
         t0 = time.monotonic()
