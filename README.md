@@ -8,7 +8,7 @@ Linux port of [`garrettmoss/restore-claude-history`](https://github.com/garrettm
 
 Claude Code stores chat transcripts as JSONL files under `~/.claude/projects/<encoded-cwd>/`. A cleanup job prunes them after `cleanupPeriodDays` (default: **30 days**, undocumented, no warning). If you haven't changed that setting, you've probably already lost months of conversations.
 
-The cleanup is a pure file-mtime sweep: any `*.jsonl` whose mtime is older than `now − cleanupPeriodDays` is unlinked. There is no orphan-detection step — restoring a transcript with its original mtime intact is enough, *provided* you also raise `cleanupPeriodDays` before the next cleanup pass (see below).
+The Claude Code **CLI** cleanup path verified at the time of this writing (bundle v2.1.88) is a pure file-mtime sweep: any `*.jsonl` whose mtime is older than `now − cleanupPeriodDays` is unlinked, with no metadata-orphan check against the session store. That means raising `cleanupPeriodDays` (next section) is necessary to keep a restored transcript from being re-deleted on the next cleanup pass — but it is **not** a complete safety net. A separate orphan-style risk exists in the Claude **Desktop** session-metadata layer (tracked in [`TODO.md`](TODO.md)), and user reports describe transcripts vanishing even with the setting raised. **Keep backups in addition to both the setting and this tool.**
 
 ## Prevention first
 
