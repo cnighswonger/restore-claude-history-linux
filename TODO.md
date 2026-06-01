@@ -61,6 +61,28 @@ NOTES.md gotcha line says `mdutil -i off` "reports success but the index restart
 
 When shipping: bump `__version__` to `1.2.0`, tag `v1.2.0`. Per CLAUDE.md, in-script version and latest git tag must match.
 
+## Friendly Full Disk Access (FDA) error message
+
+Today, if the terminal running [restore_claude_history.py](restore_claude_history.py) doesn't have Full Disk Access, `mount_apfs` fails with a cryptic `Operation not permitted` and the script keeps going (it's caught as a warn-and-skip in `mount_snapshot`). User sees the raw macOS error and no guidance.
+
+Fix: in `mount_snapshot`, when `mount_apfs` fails and stderr contains `permission` (case-insensitive), print a clearer message before the existing warn and exit. Don't add a separate preflight check — `com.apple.TCC` probing adds a new failure mode unrelated to what we actually care about, and the real `mount_apfs` call is the only place this matters.
+
+Suggested wording (keep `(Underlying error: ...)` so unrelated mount failures — typo'd snapshot name, missing device — still surface):
+
+```
+ERROR: Could not mount your Time Machine backup snapshot.
+
+This usually means the terminal running this script doesn't have
+Full Disk Access (FDA). Grant FDA to whatever terminal you are
+running this from (Terminal.app, iTerm, VS Code, Cursor, etc.):
+
+  System Settings → Privacy & Security → Full Disk Access → toggle on
+
+Then re-run. (Underlying error: <captured mount_apfs stderr>)
+```
+
+Apply the same treatment in [tests/spotlight_harness.py](tests/spotlight_harness.py)'s mount call. Also worth a one-line note in README about needing FDA.
+
 ## Claude Desktop session recovery
 
 The Claude Desktop app has an embedded Claude Code area that lists past sessions in its UI, but clicking them often shows **"Session not found on disk"** — same disappearing-chat problem as Claude Code CLI, different storage location.
