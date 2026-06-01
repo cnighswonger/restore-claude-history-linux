@@ -31,7 +31,6 @@ import os
 import subprocess
 import sys
 import tempfile
-import threading
 import time
 from pathlib import Path
 
@@ -228,15 +227,18 @@ def main() -> int:
         t_mount = time.monotonic()
         apply_strategy(args.strategy, mp)
 
-        # Sample post-mount in a thread so we can also do a small walk.
-        sampler = threading.Thread(target=sample_series, args=("post-mount", t_mount, OFFSETS))
-        sampler.start()
+        # Serial: sample immediately after mount, then walk, then keep sampling
+        # so we see the mount-attributable churn and the walk-attributable churn
+        # as separate phases. Mirrors how the production script behaves.
+        sample_series("post-mount", t_mount, [0.0, 1.0])
 
-        # Wait long enough that the 15s sample is captured, then walk.
-        time.sleep(15.5)
+        t_walk = time.monotonic()
         walked = walk_data(mp)
-        print(f"# walked {walked} files", file=sys.stderr, flush=True)
-        sampler.join()
+        walk_secs = time.monotonic() - t_walk
+        print(f"# walked {walked} files in {walk_secs:.2f}s", file=sys.stderr, flush=True)
+
+        t_post_walk = time.monotonic()
+        sample_series("post-walk", t_post_walk, [0.0, 1.0, 5.0, 15.0, 30.0])
 
         # Unmount
         print("# unmount", file=sys.stderr, flush=True)
