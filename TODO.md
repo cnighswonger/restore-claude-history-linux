@@ -48,18 +48,19 @@ Reality check on coverage: Apple docs claim "hourly local snapshots, retained 24
 
 Also shipped alongside: `--list-only` flag for machine-readable preview, and the test harness (`verify_restore.py`) now uses it to pick test files from the intersection of (on-disk) ∩ (in-snapshot) and assert restored size + mtime match the snapshot's, not the live file's.
 
-## Quiet Spotlight on snapshot mounts (v1.2)
+## ~~Quiet Spotlight on snapshot mounts (v1.2)~~ — investigated 2026-06-01, not shipping
 
-Real target: stop the post-unmount mdworker_shared / CGPDFService storm documented in v1.0.1's notes above. Deprioritized to v1.2 because local-snapshot support (v1.1) likely makes this a non-issue for the common case — most users won't even mount the TM drive once local snapshots cover recent deletions. Still worth fixing for the deep-history path.
+**Result: no ship.** Spent a session measuring with `tests/spotlight_harness.py` and confirmed the CPU pain is **outside our script's reach.** Detailed findings in [NOTES.md](NOTES.md) ("Spotlight indexes the macOS-owned auto-mount..." entry) and the harness logs at [tests/logs/index.md](tests/logs/index.md). Summary:
 
-NOTES.md gotcha line says `mdutil -i off` "reports success but the index restarts" — likely tried naively in a past session. Worth revisiting more carefully:
+- Drive plugged + unlocked, *no script*: 11 CGPDFService at 195% CPU. The swarm starts before we run anything.
+- Our temp snapshot mount is invisible to Spotlight (`mdutil -s` says "unknown indexing state"). Strategies targeting our mountpoint don't address what's actually being scanned.
+- `mdutil -d /Volumes/<TM drive>` reaches the real off-state but **macOS auto-re-enables within the same syscall.** Re-enabler unidentified — `backupd` or a volume-mount hook are the leading suspects.
 
-- `mdutil -i off <mountpoint>` called *immediately* after `mount_apfs`, before the walk. Confirm whether the "index restarts" behavior is on next mount or in-place.
-- `.metadata_never_index` and `.metadata_never_index_unless_rootfs` placed at the mountpoint root before walking. NOTES.md says these "do nothing" — verify against current macOS; the docs may have been written against an older OS version.
-- Mount options: `mount_apfs -o noexec,noatime` etc. — see if there's a noindex equivalent.
-- Last resort: `tmutil addexclusion -p <mountpoint>` or Spotlight Privacy plist injection (sudo, persists across mounts — surprises users, document loudly).
+The cheap strategies originally queued here (`.metadata_never_index`, `tmutil addexclusion`, mount flags) all target our temp mountpoint, so they share the "wrong path" problem. Not worth investigating further without a different attack vector.
 
-When shipping: bump `__version__` to `1.2.0`, tag `v1.2.0`. Per CLAUDE.md, in-script version and latest git tag must match.
+**Open question worth a future investigation session** (not blocking anything): identify what re-enables indexing after `mdutil -d`. Install Apple's developer Logging profile to disable `<private>` redaction in `log show --predicate 'subsystem == "com.apple.metadata"'`, then `sudo mdutil -d` the TM volume and grep the log for the re-enable. If we can name the daemon, we can decide whether disabling *it* is worth the user-visible cost.
+
+The only known way to fully prevent the swarm today is Spotlight Privacy plist injection at the *macOS auto-mount path* (not our temp mount). That's `/Library/Preferences/com.apple.spotlight.plist` modification, requires sudo, persists across mounts, modifies system-wide Spotlight config. Too invasive for the script to do silently. Could be documented in README as an "if you really want to" recipe for the deep-history users.
 
 ## Friendly Full Disk Access (FDA) error message
 
