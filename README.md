@@ -2,29 +2,13 @@
 
 Recover deleted Claude Code chat transcripts from Linux filesystem snapshots.
 
-> **Linux port — v1 in progress.** This is the Linux fork of
-> [`garrettmoss/restore-claude-history`](https://github.com/garrettmoss/restore-claude-history)
-> (macOS Time Machine). The recovery logic is unchanged; the macOS
-> snapshot-discovery layer is replaced by pluggable backends. **Phase 1 ships
-> the backend abstraction + the ZFS backend.** Btrfs and Timeshift follow; see
-> [`docs/directives/rcb-v1-directive-2026-05-28.md`](docs/directives/rcb-v1-directive-2026-05-28.md)
-> and [`docs/backends.md`](docs/backends.md). The macOS sections below are
-> retained from upstream pending the Phase 4 README rewrite.
->
-> Linux usage today:
-> ```bash
-> python3 restore_claude_history.py --list-backends          # what's available
-> python3 restore_claude_history.py --backend zfs --dry-run   # preview
-> python3 restore_claude_history.py --backend zfs             # restore
-> ```
-> `--backend auto` (the default) selects the sole backend that finds snapshots,
-> and fails loud asking for an explicit `--backend` if several do.
+Linux port of [`garrettmoss/restore-claude-history`](https://github.com/garrettmoss/restore-claude-history) (macOS Time Machine). The recovery logic — walk every snapshot, pick the largest version of each transcript, copy it back preserving mtime — is unchanged from upstream. Only the snapshot-discovery layer is replaced, with pluggable backends for the snapshot tools Linux users actually run: **ZFS**, **Btrfs**, and **Timeshift**.
 
 ## Background
 
 Claude Code stores chat transcripts as JSONL files under `~/.claude/projects/<encoded-cwd>/`. A cleanup job prunes them after `cleanupPeriodDays` (default: **30 days**, undocumented, no warning). If you haven't changed that setting, you've probably already lost months of conversations.
 
-If you have a macOS Time Machine drive, this script ([`restore_claude_history.py`](restore_claude_history.py)) can get them back.
+The Claude Code **CLI** cleanup path verified at the time of this writing (bundle v2.1.88) is a pure file-mtime sweep: any `*.jsonl` whose mtime is older than `now − cleanupPeriodDays` is unlinked, with no metadata-orphan check against the session store. That means raising `cleanupPeriodDays` (next section) is necessary to keep a restored transcript from being re-deleted on the next cleanup pass — but it is **not** a complete safety net. A separate orphan-style risk exists in the Claude **Desktop** session-metadata layer (tracked in [`TODO.md`](TODO.md)), and user reports describe transcripts vanishing even with the setting raised. **Keep backups in addition to both the setting and this tool.**
 
 ## Prevention first
 
@@ -44,19 +28,24 @@ This script: [`restore_claude_history.py`](restore_claude_history.py)
 
 ### Requirements
 
-- macOS with an APFS Time Machine drive that has snapshots
-- **Full Disk Access** for whatever app runs the script (Terminal, iTerm, VS Code)
-  - System Settings → Privacy & Security → Full Disk Access → +
-- Python 3.7+ (the system `python3` from Apple's Command Line Tools is fine)
+- Linux with one of:
+  - a **ZFS** pool with snapshots (`zfsutils-linux`)
+  - a **Btrfs** filesystem with read-only snapshots (`btrfs-progs`)
+  - **Timeshift** (RSYNC or BTRFS mode) with at least one snapshot
+- Python 3.10+
+- `setfacl` / `getfacl` (`acl` package) — used to strip inherited ACLs on restore. Missing or no-op-on-this-fs is fine; the script skips gracefully.
+- Snapshot tooling typically requires **root** for full inventory (e.g. `btrfs subvolume list -s`). Run with `sudo` if `--list-backends` shows zero snapshots despite snapshots existing.
 
 ### Quickstart
 
 ```bash
-# Plug in your Time Machine drive, then:
-git clone https://github.com/garrettmoss/restore-claude-history
-cd restore-claude-history
+git clone https://github.com/cnighswonger/restore-claude-history-linux
+cd restore-claude-history-linux
 
-# See what would be restored, no changes made:
+# See which backends are available and how many snapshots each found:
+python3 restore_claude_history.py --list-backends
+
+# Preview what would be restored, no changes made:
 python3 restore_claude_history.py --dry-run --verbose
 
 # Actually restore:
@@ -67,42 +56,64 @@ python3 restore_claude_history.py
 
 | Flag | What it does |
 |---|---|
+| `--backend {auto,zfs,btrfs,timeshift}` | Which backend to use. Default `auto` (see below). |
+| `--list-backends` | Print each backend's availability + discovered snapshot count, then exit. |
 | `--dry-run` | Show what would be restored, copy nothing. Always run this first. |
-| `--project NAME` | Limit to one encoded project dir (e.g. `--project=-Users-you-projects-foo`). Note the `=` — encoded names start with `-`. |
+| `--project NAME` | Limit to one encoded project dir (e.g. `--project=-home-you-projects-foo`). Note the `=` — encoded names start with `-`. |
 | `--include-memory` | Also restore `<project>/memory/` subdirs. |
 | `--verbose` | Log every file decision, not just the summary. |
 | `--dest DIR` | Restore into `DIR` instead of `~/.claude/projects` (for testing). |
 
+### `--backend auto` (the default)
+
+`auto` runs every available backend's discovery, deduplicates results, then requires exactly **one** backend to have candidates:
+
+- **Zero backends find snapshots** → exits with "no snapshots found on any backend"; check `--list-backends` and that your snapshot tool is installed.
+- **Exactly one backend finds snapshots** → uses it; logs which one.
+- **Multiple backends find snapshots** → exits with an ambiguity error listing each backend, its snapshot count, and an example path. Re-run with `--backend <name>` to pick one.
+
+This intentionally fails loud rather than guessing. On a Timeshift-on-Btrfs host, the orchestrator's overlap-resolution rule keeps the Timeshift entry and prunes the Btrfs duplicate (per-snapshot, exact path match) — so a properly-configured Timeshift host won't trigger ambiguity. Explicit `--backend <name>` bypasses dedup and returns that backend's full raw inventory.
+
 ### What it does
 
-1. Finds your Time Machine APFS volume.
-2. Mounts every snapshot read-only (or reuses ones macOS already auto-mounted).
-3. Indexes every `.jsonl` it finds across all snapshots.
-4. For each `(project, filename)`, picks the **largest** version — JSONLs are append-only, so bigger = more complete.
-5. Copies it back, **preserving the original mtime** and stripping the inherited Time Machine ACL so the restored files remain writable.
-6. Skips files where your on-disk version is already the same size or larger — so active or in-progress chats are never overwritten with an older snapshot.
-7. Cleans up the snapshots it mounted (leaves any pre-existing system mounts alone).
+1. Discovers snapshots via the selected backend (see [`docs/backends.md`](docs/backends.md) for the per-backend mechanics).
+2. For each snapshot, locates `.claude/projects/` under the user's home (handles snapshot-of-`/`, snapshot-of-`/home`, snapshot-of-`$HOME` layouts; follows symlinked home paths).
+3. For each `(project, filename)`, picks the **largest** version across all snapshots — JSONLs are append-only, so bigger = more complete.
+4. Copies it back, **preserving the original mtime** and stripping any inherited ACL via `setfacl -b`.
+5. Skips files where your on-disk version is already the same size or larger — active chats are never overwritten with an older snapshot.
+6. For per-session subdirs (`subagents/`, optionally `memory/`), the largest subtree wins (independent of backend-defined snapshot ordering, which isn't time-sortable).
 
 ### Verifying it works
 
-There's an end-to-end test that builds a sandbox from your real chats, deletes a few files, restores them, and checks size/mtime/ACL match:
+End-to-end test that builds synthetic snapshots in tempdirs, runs the restore loop, and checks size/mtime/ACL:
 
 ```bash
-python3 tests/verify_restore.py --project=-Users-you-projects-foo
+python3 tests/verify_restore.py
 ```
 
-## Background reading
+Layer 3 integration tests against real ZFS / Btrfs / Timeshift are opt-in:
 
-See [NOTES.md](NOTES.md) for the full story: how the bug works, what Time Machine snapshots actually look like, what we tried that didn't work, and the verified working commands from the original recovery session.
+```bash
+# See tests/integration/README.md for per-backend setup.
+pytest tests/integration/ -v
+```
 
-### See also
+## See also
 
-This tool covers exactly one slice of the disappearing-Claude-chats problem: macOS, Time Machine, JSONLs deleted from disk. If that's not your situation, one of these may help:
+- **Upstream:** [`garrettmoss/restore-claude-history`](https://github.com/garrettmoss/restore-claude-history) — the macOS Time Machine original. Use that on macOS; the macOS and Linux trees deliberately don't merge (cross-OS confusion is a leading cause of restore failures in this problem space).
+
+If your situation isn't "Linux + filesystem snapshot + JSONLs missing from disk", one of these may help:
 
 - **[ibrews/claude-session-recovery](https://github.com/ibrews/claude-session-recovery)** — your JSONLs are still on disk, but Claude Desktop's UI doesn't show them (index corruption after a crash/BSOD). Cross-platform; rebuilds the Desktop session index.
 - **[markwoitaszek/claude-session-recovery](https://github.com/markwoitaszek/claude-session-recovery)** — Claude Desktop crashes with "There was a problem with the session" on a specific large/complex chat. Cross-platform; extracts the JSONL to clean Markdown so you don't lose the conversation.
 - **[BasedGPT/claude-code-session-recovery](https://github.com/BasedGPT/claude-code-session-recovery)** — Windows-specific Claude Desktop metadata repair (orphan JSONLs, junction slug mismatches, missing groupings).
 - **[DeveloperAlly/claude-code-survival-toolkit](https://github.com/DeveloperAlly/claude-code-survival-toolkit)** — broader in-app survival kit for the VS Code extension: 9 fix scripts (sidebar dropped sessions, scrambled titles, scrambled sort order, vscode `state.vscdb` snapshot/restore) plus 7 governance hooks. macOS bash; use this if your data is on disk but the extension's sidebar is broken or scrambled.
+
+## Further reading
+
+- [`docs/backends.md`](docs/backends.md) — backend interface, per-backend mechanics, and how to add a new backend.
+- [`docs/directives/rcb-v1-directive-2026-05-28.md`](docs/directives/rcb-v1-directive-2026-05-28.md) — the v1 design directive, including the `--backend auto` ambiguity semantics and overlap-resolution rules.
+- [`NOTES.md`](NOTES.md) — historical context from upstream's macOS recovery work (much of the snapshot-handling and mtime-preservation reasoning carries over).
 
 ## License
 

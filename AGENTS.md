@@ -11,7 +11,7 @@ The upstream tool is macOS + APFS + Time Machine only. This port keeps the upstr
 - **License:** MIT (matches upstream; see [`LICENSE`](LICENSE))
 - **Upstream:** `garrettmoss/restore-claude-history` — bidirectional "See also" cross-reference maintained
 - **Owner:** cnighswonger (personal account)
-- **Status:** Pre-v1 — backend abstraction and three v1 adapters (ZFS, Btrfs, Timeshift) in progress per [`docs/directives/rcb-v1-directive-2026-05-28.md`](docs/directives/rcb-v1-directive-2026-05-28.md)
+- **Status:** v1 candidate — backend abstraction and three v1 adapters (ZFS, Btrfs, Timeshift) implemented per [`docs/directives/rcb-v1-directive-2026-05-28.md`](docs/directives/rcb-v1-directive-2026-05-28.md); QEMU e2e harness held for execution before the `v1.0.0` tag (see [`docs/plans/qemu-e2e-plan.md`](docs/plans/qemu-e2e-plan.md))
 
 ## v1 scope
 
