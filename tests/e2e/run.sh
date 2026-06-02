@@ -31,7 +31,7 @@ preflight() {
     [ -f "$HERE/$BACKEND/user-data.yaml" ] || {
         echo "ERROR: missing $HERE/$BACKEND/user-data.yaml" >&2; exit 2;
     }
-    for bin in qemu-system-x86_64 cloud-localds curl ssh-keygen ssh; do
+    for bin in qemu-system-x86_64 qemu-img cloud-localds curl ssh-keygen ssh; do
         command -v "$bin" >/dev/null || {
             echo "ERROR: $bin not found. See tests/e2e/README.md prereqs." >&2
             exit 2
@@ -131,27 +131,44 @@ echo "[boot]   starting VM (accel=$ACCEL, mem=$VM_MEM, cpus=$VM_CPUS, ssh=127.0.
 # -daemonize is incompatible with -nographic (which sets -serial stdio); we use
 # explicit -display none + serial-to-file so the console is captured for
 # debugging without tying QEMU to this script's stdio.
-qemu-system-x86_64 \
-    -name "rcb-e2e-$BACKEND" \
-    -machine accel="$ACCEL" \
-    $( [ "$ACCEL" = "kvm" ] && echo "-cpu host" ) \
-    -smp "$VM_CPUS" \
-    -m "$VM_MEM" \
-    -display none \
-    -serial "file:$SCRATCH/serial.log" \
-    -monitor none \
-    -drive "file=$SCRATCH/disk.qcow2,if=virtio,format=qcow2" \
-    -drive "file=$SCRATCH/seed.iso,if=virtio,format=raw,readonly=on" \
-    -netdev "user,id=net0,hostfwd=tcp::$SSH_PORT-:22" \
-    -device "virtio-net-pci,netdev=net0" \
-    -daemonize \
-    -pidfile "$SCRATCH/qemu.pid" 2> "$SCRATCH/qemu.stderr" || {
-        echo "ERROR: qemu failed to launch:" >&2
-        cat "$SCRATCH/qemu.stderr" >&2
-        trap - EXIT
-        echo "       scratch preserved at $SCRATCH" >&2
-        exit 4
-    }
+#
+# Retry the launch up to 3 times if the host port forwarding fails: pick_port
+# can race against another process grabbing the same ephemeral port between
+# the python check and the qemu bind.
+launch_qemu() {
+    qemu-system-x86_64 \
+        -name "rcb-e2e-$BACKEND" \
+        -machine accel="$ACCEL" \
+        $( [ "$ACCEL" = "kvm" ] && echo "-cpu host" ) \
+        -smp "$VM_CPUS" \
+        -m "$VM_MEM" \
+        -display none \
+        -serial "file:$SCRATCH/serial.log" \
+        -monitor none \
+        -drive "file=$SCRATCH/disk.qcow2,if=virtio,format=qcow2" \
+        -drive "file=$SCRATCH/seed.iso,if=virtio,format=raw,readonly=on" \
+        -netdev "user,id=net0,hostfwd=tcp::$SSH_PORT-:22" \
+        -device "virtio-net-pci,netdev=net0" \
+        -daemonize \
+        -pidfile "$SCRATCH/qemu.pid" 2> "$SCRATCH/qemu.stderr"
+}
+launched=0
+for attempt in 1 2 3; do
+    if launch_qemu; then launched=1; break; fi
+    if grep -q "Could not set up host forwarding rule" "$SCRATCH/qemu.stderr"; then
+        echo "[boot]   port $SSH_PORT raced; re-picking and retrying ($attempt/3)"
+        SSH_PORT=$(pick_port)
+        continue
+    fi
+    break
+done
+if [ "$launched" != "1" ]; then
+    echo "ERROR: qemu failed to launch:" >&2
+    cat "$SCRATCH/qemu.stderr" >&2
+    trap - EXIT
+    echo "       scratch preserved at $SCRATCH" >&2
+    exit 4
+fi
 
 QEMU_PID=$(cat "$SCRATCH/qemu.pid")
 if ! kill -0 "$QEMU_PID" 2>/dev/null; then
@@ -171,6 +188,19 @@ if ! "$HERE/lib/ssh-wait.sh" "$SCRATCH/id_ed25519" "$SSH_PORT" "$SSH_WAIT_SECS";
     echo "       scratch preserved at $SCRATCH" >&2
     exit 3
 fi
+
+# Bound the rest of the run with RUN_TIMEOUT_SECS so a hung guest can't park
+# the wrapper indefinitely. We arm an alarm that SIGTERMs both qemu and us;
+# the EXIT trap then cleans up. Using $$ + nohup-style watchdog rather than
+# `timeout` because the remaining work is several ssh sessions, not a single
+# command we can wrap.
+( sleep "$RUN_TIMEOUT_SECS" \
+  && echo "ERROR: RUN_TIMEOUT_SECS=$RUN_TIMEOUT_SECS exceeded; killing run" >&2 \
+  && kill -TERM "$$" 2>/dev/null \
+) &
+WATCHDOG_PID=$!
+disown $WATCHDOG_PID 2>/dev/null || true
+trap 'kill "$WATCHDOG_PID" 2>/dev/null || true; kill "$QEMU_PID" 2>/dev/null || true; rm -rf "$SCRATCH"' EXIT
 
 SSH="ssh -i $SCRATCH/id_ed25519 -p $SSH_PORT \
         -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \

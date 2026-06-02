@@ -11,7 +11,7 @@ release.
 ## Prereqs
 
 ```bash
-sudo apt install qemu-system-x86 cloud-image-utils
+sudo apt install qemu-system-x86 qemu-utils cloud-image-utils
 sudo usermod -aG kvm "$USER"   # then log out + back in (or run via `sg kvm -c '…'`)
 ```
 
