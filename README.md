@@ -2,14 +2,13 @@
 
 Recover deleted Claude Code chat transcripts from Linux filesystem snapshots.
 
-> **Status: beta.** The recovery logic is end-to-end-verified for **ZFS**, **Btrfs**, and **Timeshift** on Ubuntu 24.04 (real kernels, real snapshots, byte-equal restore). It has not yet been validated against real user data — only synthetic fixtures planted by the test harness. Specifically untested:
+> **Status: beta.** The recovery logic is end-to-end-verified for **ZFS**, **Btrfs**, and **Timeshift** on Ubuntu 24.04 (real kernels, real snapshots, byte-equal restore), and a dogfood pass on Btrfs has confirmed a restored transcript loads and resumes in a fresh Claude Code session. Specifically untested:
 > - The e2e harness exercises a single path: unflagged restore of one synthetic transcript from one snapshot. Per-flag status:
 >     - `--dry-run` and `--include-memory` have full restore-loop tempdir tests (Layer 2), but never run inside the e2e harness against a real backend.
 >     - `--project NAME` has a Layer 1 test of the underlying `index_projects` filter function; its CLI wiring (`Options.project` → restore loop) has no automated test.
 >     - `--list-backends` has no automated test coverage at any layer.
 > - Unusual home-dir layouts: encrypted home (eCryptfs / fscrypt / ZFS-native), symlinked home across filesystems, NFS-mounted home.
 > - Cross-backend overlap-resolution against real backends (e.g. Timeshift-on-Btrfs deduplication) — tracked as [#13](https://github.com/cnighswonger/restore-claude-history-linux/issues/13) for v1.1.
-> - The full loop: restored file → Claude Code actually loads it without re-deletion — tracked as [#15](https://github.com/cnighswonger/restore-claude-history-linux/issues/15).
 >
 > **Reading the rest of this README assuming production-grade is wrong.** Use the tool, but treat each restore as a candidate to verify by hand.
 
@@ -93,6 +92,14 @@ This intentionally fails loud rather than guessing. On a Timeshift-on-Btrfs host
 4. Copies it back, **preserving the original mtime** and stripping any inherited ACL via `setfacl -b`.
 5. Skips files where your on-disk version is already the same size or larger — active chats are never overwritten with an older snapshot.
 6. For per-session subdirs (`subagents/`, optionally `memory/`), the largest subtree wins (independent of backend-defined snapshot ordering, which isn't time-sortable).
+
+### Resuming a restored session
+
+Once the file is back on disk, Claude Code reads `~/.claude/projects/<encoded-cwd>/*.jsonl` directly — there's no metadata layer to repair. But `/resume` and `--continue` behave differently and the difference matters for restored sessions:
+
+- **`/resume` — the right path for restored sessions.** Shows a picker of every session whose internal `cwd` field is the current working directory or one of its descendants. `cd` into the directory the session was originally recorded under (or any ancestor of it) before launching Claude Code. If you restore a transcript that was recorded under `/home/you/projects/foo` and launch from `/tmp`, the session is on disk but won't appear — `/tmp` isn't an ancestor of `/home/you/projects/foo`.
+- **`--continue` — usually not what you want for restored sessions.** Auto-picks the session with the newest mtime in the current project dir. Because the tool preserves the original mtime (the only way for the cleanup pass to see the restored file at its true age), a restored old session is typically *older* than your active ones — `--continue` will reopen one of those instead. Use `/resume` and pick the restored session by name.
+- **Keep `cleanupPeriodDays` high.** Preserved mtime means the next cleanup pass treats a restored file as if it never left, and will re-delete it after `cleanupPeriodDays` days. The "Prevention first" section above is the fix.
 
 ### Verifying it works
 
