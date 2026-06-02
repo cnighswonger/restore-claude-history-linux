@@ -7,7 +7,7 @@
 # btrfs-progs install goes in runcmd, same pattern as the ZFS leg.
 
 runcmd:
-  - [ git, clone, --depth, "1", "https://github.com/cnighswonger/restore-claude-history-linux.git", /opt/rcb ]
+  - [ git, clone, --depth, "1", "https://github.com/vsits/restore-claude-history-linux.git", /opt/rcb ]
   - [ sh, -c, "DEBIAN_FRONTEND=noninteractive apt-get install -y -qq btrfs-progs" ]
   - [ sh, -c, "truncate -s 512M /var/lib/rcb-btrfs.img" ]
   - [ mkfs.btrfs, /var/lib/rcb-btrfs.img ]

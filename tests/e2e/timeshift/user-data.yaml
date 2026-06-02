@@ -48,7 +48,7 @@ write_files:
       }
 
 runcmd:
-  - [ git, clone, --depth, "1", "https://github.com/cnighswonger/restore-claude-history-linux.git", /opt/rcb ]
+  - [ git, clone, --depth, "1", "https://github.com/vsits/restore-claude-history-linux.git", /opt/rcb ]
   - [ sh, -c, "DEBIAN_FRONTEND=noninteractive apt-get install -y -qq timeshift rsync" ]
   - [ mkdir, -p, /timeshift/snapshots ]
   # Pre-seed Timeshift's backup_device_uuid (the seeded config has it empty)

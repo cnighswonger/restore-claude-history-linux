@@ -10,7 +10,7 @@
 
 set -u
 REPO_DIR="${RCB_REPO_DIR:-/home/manager/git_repos/restore-claude-history-linux}"
-GH_REPO="cnighswonger/restore-claude-history-linux"
+GH_REPO="vsits/restore-claude-history-linux"
 UPSTREAM_BRANCH="upstream/master"
 STATE_FILE="$HOME/.claude/rcb-upstream-last-seen-sha"
 LOG="$HOME/.claude/rcb-upstream-sync.log"
