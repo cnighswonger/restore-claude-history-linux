@@ -44,12 +44,14 @@ runcmd:
   # Pre-seed Timeshift's backup_device_uuid (the seeded config has it empty)
   # to the rootfs UUID, so `timeshift --create` does not prompt interactively.
   - [ sh, -c, "python3 -c 'import json,subprocess; p=\"/etc/timeshift/timeshift.json\"; d=json.load(open(p)); d[\"backup_device_uuid\"]=subprocess.check_output([\"findmnt\",\"-no\",\"UUID\",\"/\"]).decode().strip(); json.dump(d,open(p,\"w\"),indent=2)'" ]
-  # Plant the restore-test fixture under /home/ubuntu (where Timeshift's RSYNC
-  # mode includes user data by default — /root is excluded). The test points
-  # HOME at /home/ubuntu so Path.home() in run_restore matches. Save expected
-  # bytes separately under /var/lib so they survive the live-file unlink.
+  # Plant the restore-test fixture under /home/ubuntu. Timeshift's RSYNC mode
+  # excludes user home dirs by default; production users who rely on Timeshift
+  # to back up Claude transcripts must explicitly include them. We mirror that
+  # via the `--include` flag below. The test points HOME at /home/ubuntu so
+  # Path.home() in run_restore matches. Save expected bytes separately under
+  # /var/lib so they survive the live-file unlink.
   - [ mkdir, -p, /home/ubuntu/.claude/projects/-rcb-integration-demo ]
   - [ sh, -c, "head -c 4096 /dev/urandom | base64 > /var/lib/rcb-expected.bin" ]
   - [ sh, -c, "cp /var/lib/rcb-expected.bin /home/ubuntu/.claude/projects/-rcb-integration-demo/session.jsonl" ]
   - [ chown, -R, "ubuntu:ubuntu", /home/ubuntu/.claude ]
-  - [ sh, -c, "timeshift --create --comments rcb-e2e" ]
+  - [ sh, -c, "timeshift --create --comments rcb-e2e --include /home/ubuntu" ]
