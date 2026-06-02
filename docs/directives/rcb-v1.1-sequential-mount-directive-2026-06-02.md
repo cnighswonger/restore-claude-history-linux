@@ -48,7 +48,7 @@ class DiscoveredSnapshot:
 
 - **ZFS:** `zfs get -Hp -o value creation <snapshot>` returns a Unix timestamp. Parse to `datetime.fromtimestamp(ts, tz=timezone.utc)`.
 - **Btrfs:** `btrfs subvolume show -m <path>` includes a `Creation time: YYYY-MM-DD HH:MM:SS +ZZZZ` line. Parse via `datetime.strptime` + `.astimezone(timezone.utc)`.
-- **Timeshift:** the snapshot directory name is itself a timestamp (`YYYY-MM-DD_HH-MM-SS`) representing creation in UTC. Parse directly with `datetime.strptime(...).replace(tzinfo=timezone.utc)`. The `info.json` file's `date_created` is a fallback if the dir name parse fails (older Timeshift versions used different formats).
+- **Timeshift:** the authoritative source is `info.json`'s `created` epoch (Timeshift writes this in UTC; the field is the source of truth). Parse with `datetime.fromtimestamp(epoch, tz=timezone.utc)`. **Fall back** to the snapshot directory name (`YYYY-MM-DD_HH-MM-SS`) only if `info.json` is missing or unparseable — and treat the dir-name fallback as **local time**, not UTC, because Timeshift creates the directory name from `DateTime.now_local()`. The fallback is therefore approximate (DST-vulnerable, host-tz-dependent), and a warning should be logged. **Do not** invert this precedence: the dir name being in local time means a UTC-naive parse would silently introduce ordering errors across timezone boundaries.
 
 Backend discovery failure modes:
 
@@ -75,21 +75,28 @@ with a single newest-first loop:
 ```python
 # new shape (pseudocode):
 snapshots_sorted = sorted(snapshots, key=lambda s: s.created_at, reverse=True)
-seen: set[tuple[str, str]] = set()
+seen_jsonls: set[tuple[str, str]] = set()
 for snap in snapshots_sorted:
     projects = locate_projects_dir(snap.data_root, home)
     if projects is None:
         continue
     for entry in index_projects(projects, opts):
         key = (entry.project, entry.filename)
-        if key in seen:
+        if key in seen_jsonls:
             continue
-        seen.add(key)
+        seen_jsonls.add(key)
         restore_file(entry, claude_dir, opts)
-    restore_subdirs_from_snapshot(snap, ..., seen_subdirs)
+# Subdir restore preserves the existing largest-subtree rule (NOT first-writer-wins).
+# Subdirs (subagents/, memory/) are NOT proven append-only — files can be renamed,
+# memory notes can be edited-and-shortened. Newest-first iteration is unsafe for
+# them. Run subdir restore AFTER the jsonl loop, against the full snapshot list,
+# using the existing largest-subtree selection.
+restore_subdirs(snapshots_sorted, ..., include_memory=opts.include_memory)
 ```
 
-`restore_subdirs` becomes `restore_subdirs_from_snapshot` — called per-iteration with its own `seen_subdirs` set carried across iterations.
+The per-jsonl restore moves to first-writer-wins on `created_at`-sorted snapshots. **The per-subdir restore stays on the existing "largest subtree wins" rule** — its existing `restore_subdirs` function is kept as-is. Rename is not required; both the function name and the post-loop call site are unchanged. The only semantic shift in v1.1 is the jsonl path.
+
+Rationale: JSONLs are append-only by construction (every event is a new line, no truncation, no in-place edits), so newest-mtime always means largest-size and the two selection rules give identical results. Subdirs (`subagents/`, `memory/`) carry no such invariant — `memory/<note>.md` files can be edited shorter, files can be removed, names can change. Switching subdir selection to first-writer-wins would silently regress restores against the v1.0.0 dogfood (which validated the largest-subtree behavior). The directive deliberately scopes the loop-shape change to jsonls only.
 
 ### 3. `--backend auto` interaction
 
@@ -108,22 +115,21 @@ The refactor touches the hot path. Acceptance requires:
 The tracking issue named three options. Rationale for picking (a):
 
 - **(a) `created_at` on `DiscoveredSnapshot` — chosen.** Cross-backend ordering is well-defined by an explicit timestamp. Backends are the right place to source it (each has a native creation-time API). The dataclass is already the abstraction layer for snapshot metadata.
-- **(b) Documented "newest-first" backend contract — rejected.** Cross-backend overlap resolution merges snapshots across backends. Within-backend ordering doesn't solve the cross-backend ordering problem; it only hides it. A `created_at` field is the smallest abstraction that actually solves it.
+- **(b) Documented "newest-first" backend contract — rejected.** The current orchestrator's `select_auto()` errors out when more than one backend has candidates, so today there is no actual cross-backend merge happening — within-backend ordering would in fact work for the present surface. The rejection still stands for three reasons: (1) **explicitness** — a contract enforced by a typed dataclass field beats a contract enforced by a documentation paragraph that the next backend author may not read; (2) **testability** — `created_at` is unit-testable per backend (assert UTC tzinfo, no future timestamps); a "returns newest-first" contract is only testable end-to-end; (3) **hot-path clarity** — the new sequential loop sorts on a value, and `s.created_at` reads cleanly compared to "trust the backend to have already sorted." We don't pay for a hypothetical future cross-backend merge, but we get the smallest correctness-by-construction surface for the existing single-backend case.
 - **(c) Size-based dedupe per-loop — rejected.** Preserves correctness, gets the memory + loop-shape wins, but loses (1) the first-writer-wins mental-model simplicity and (2) the upstream-alignment that motivates the port. Half a port at best; the implementation cost is similar to (a) but the long-term cost (ongoing structural drift from upstream) is much higher.
 
 ## Out of scope
 
 - No backend ABC changes beyond the new field on `DiscoveredSnapshot`. The `discover()` signature is unchanged.
 - No CLI surface changes. `--list-backends` output may show the new timestamp in verbose mode but is not required.
-- No subdir-restore semantic changes beyond the per-snapshot call shape.
-- The `restore_subdirs_from_snapshot` rename is not back-compat-shimmed — internal name change, no external callers.
+- No subdir-restore semantic changes at all. `restore_subdirs` and its existing largest-subtree selection rule are preserved verbatim. The v1.1 refactor scope is the jsonl path only.
 - Backend-creation timestamps are not normalized across backends. Each backend reports what its tooling reports, converted to UTC. We do not attempt to second-guess upstream timestamps (e.g. if Timeshift's dir-name timestamp drifts from `info.json`, the dir name wins because that's what existed historically).
 
 ## Acceptance criteria
 
 - [ ] `DiscoveredSnapshot.created_at` lands as a required UTC `datetime` field; all three v1 backends populate it.
-- [ ] Orchestrator's `run_restore` runs a sequential newest-first loop with `seen`-set dedupe. `pick_largest` is removed (or kept as a thin shim used by no production caller, deleted in a follow-up — anti-bloat lens applies here, deletion preferred).
-- [ ] `restore_subdirs` is renamed to `restore_subdirs_from_snapshot` and called per-iteration.
+- [ ] Orchestrator's `run_restore` runs a sequential newest-first loop with `seen`-set dedupe for **jsonls only**. `pick_largest` is removed (anti-bloat lens applies; deletion preferred over shim retention).
+- [ ] `restore_subdirs` retains its existing "largest subtree wins" selection rule and is still called once after the jsonl loop with the full snapshot list. No semantic change to subdir restore.
 - [ ] All 87 existing tests pass.
 - [ ] QEMU e2e harness passes on ZFS, Btrfs, Timeshift.
 - [ ] Btrfs dogfood passes the same shape as v1.0.0.
@@ -135,8 +141,8 @@ The tracking issue named three options. Rationale for picking (a):
 This directive PR establishes scope, NFRs, and the design choice. The implementation lands in a separate PR titled along the lines of `feat: sequential per-snapshot restore loop with created_at (closes #22)`. Implementation order:
 
 1. Add `created_at` to `DiscoveredSnapshot`. Update each backend's `discover()` to populate it. Tests: per-backend unit tests that assert UTC tzinfo + reasonable bounds (no future timestamps, no negatives).
-2. Rewrite `run_restore` to the sequential shape. Delete `pick_largest`. Rename `restore_subdirs`.
-3. Update the existing tempdir-integration tests to assert first-writer-wins ordering.
+2. Rewrite `run_restore` to the sequential shape for the jsonl path. Delete `pick_largest`. Leave `restore_subdirs` and its call site alone — semantic unchanged.
+3. Update the existing tempdir-integration tests to assert first-writer-wins ordering **for jsonls**, and add a regression test confirming subdir restore still picks the largest subtree (a snapshot pair where the newer subtree is smaller than an older one).
 4. Run the full QEMU e2e harness on all three backends.
 5. Re-dogfood pass on Btrfs.
 
