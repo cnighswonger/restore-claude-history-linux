@@ -95,10 +95,11 @@ This intentionally fails loud rather than guessing. On a Timeshift-on-Btrfs host
 
 ### Resuming a restored session
 
-Once the file is back on disk, `/resume` (and `--continue`) will find it — Claude Code's session picker reads `~/.claude/projects/<encoded-cwd>/*.jsonl` directly and sorts by mtime. Two practical rules fall out:
+Once the file is back on disk, Claude Code reads `~/.claude/projects/<encoded-cwd>/*.jsonl` directly — there's no metadata layer to repair. But `/resume` and `--continue` behave differently and the difference matters for restored sessions:
 
-1. **Launch from the original project directory (or an ancestor of it).** The picker only shows sessions whose internal `cwd` field is the current working directory or below. If you restore a transcript that was recorded under `/home/you/projects/foo` and launch Claude Code from `/tmp`, the session is on disk but won't appear in the picker. `cd` into the project dir first.
-2. **Keep `cleanupPeriodDays` high.** Restored files keep their original mtime (so the picker shows them at their true age and `--continue` doesn't accidentally jump back to one). With the default 30-day window, the next cleanup pass will re-delete anything older than 30 days. The "Prevention first" section above is the fix.
+- **`/resume` — the right path for restored sessions.** Shows a picker of every session whose internal `cwd` field is the current working directory or one of its descendants. `cd` into the directory the session was originally recorded under (or any ancestor of it) before launching Claude Code. If you restore a transcript that was recorded under `/home/you/projects/foo` and launch from `/tmp`, the session is on disk but won't appear — `/tmp` isn't an ancestor of `/home/you/projects/foo`.
+- **`--continue` — usually not what you want for restored sessions.** Auto-picks the session with the newest mtime in the current project dir. Because the tool preserves the original mtime (the only way for the cleanup pass to see the restored file at its true age), a restored old session is typically *older* than your active ones — `--continue` will reopen one of those instead. Use `/resume` and pick the restored session by name.
+- **Keep `cleanupPeriodDays` high.** Preserved mtime means the next cleanup pass treats a restored file as if it never left, and will re-delete it after `cleanupPeriodDays` days. The "Prevention first" section above is the fix.
 
 ### Verifying it works
 
