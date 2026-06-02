@@ -22,13 +22,14 @@ cd "$REPO_DIR" || { log "ERROR: cannot cd to $REPO_DIR"; exit 1; }
 
 git fetch upstream --quiet 2>>"$LOG" || { log "ERROR: git fetch upstream failed"; exit 1; }
 
-UPSTREAM_HEAD=$(git rev-parse "$UPSTREAM_BRANCH" 2>/dev/null)
-LAST_SEEN=$(cat "$STATE_FILE" 2>/dev/null || echo "")
-
-if [ -z "$UPSTREAM_HEAD" ]; then
+# --verify rejects unresolvable refs with a non-zero exit AND empty stdout
+# (plain `git rev-parse upstream/master` echoes the literal ref string on
+# failure, which would silently pass the non-empty check below).
+if ! UPSTREAM_HEAD=$(git rev-parse --verify --quiet "$UPSTREAM_BRANCH^{commit}"); then
     log "ERROR: cannot resolve $UPSTREAM_BRANCH"
     exit 1
 fi
+LAST_SEEN=$(cat "$STATE_FILE" 2>/dev/null || echo "")
 
 if [ "$UPSTREAM_HEAD" = "$LAST_SEEN" ]; then
     log "no change (head $UPSTREAM_HEAD)"
@@ -57,9 +58,12 @@ if [ -z "$NEW_COMMITS" ]; then
         echo "$UPSTREAM_HEAD" > "$STATE_FILE"
         exit 0
     fi
-    # Head moved but range is empty — something unexpected. Re-report from
-    # origin/main on next run rather than advancing state and losing visibility.
-    log "ERROR: head advanced to $UPSTREAM_HEAD but $RANGE_FROM..$UPSTREAM_HEAD is empty; leaving state unchanged for full re-report"
+    # Head moved but range is empty under the fallback (e.g. upstream rewound
+    # to an ancestor of our origin/main). Leave state unchanged; do not silently
+    # advance. The same condition will keep tripping until upstream moves
+    # forward or an operator resets the state file by hand — that's
+    # intentional: it's noisy in the log but never loses commits.
+    log "ERROR: $UPSTREAM_BRANCH=$UPSTREAM_HEAD with empty $RANGE_FROM..$UPSTREAM_HEAD; leaving state unchanged (requires operator attention if persistent)"
     exit 1
 fi
 
