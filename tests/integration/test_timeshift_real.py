@@ -86,27 +86,28 @@ def test_timeshift_full_restore():
     snaps = backend.discover()
     assert snaps, "no Timeshift snapshots discovered post-create"
 
-    # Diagnostic: before invoking run_restore, walk the discovered snapshot's
-    # data_root and assert that .claude/projects is actually present under it.
-    # This pinpoints whether a failure is in Timeshift's RSYNC scope (fixture
-    # not in the snapshot) or in locate_projects_dir (path-probing miss).
-    snap = snaps[0]
+    # Diagnostic: before invoking run_restore, find a discovered snapshot that
+    # actually contains our fixture. discover() can return multiple snapshots
+    # (a prior run that didn't clean up, or a retry); pinning on snaps[0] would
+    # let a stale snapshot mask a Timeshift-RSYNC-scope problem with the
+    # fixture we just planted. Scan all and require at least one match.
     expected_relpath = Path("home/ubuntu/.claude/projects") / "-rcb-integration-demo" \
         / "session.jsonl"
-    snap_file = snap.data_root / expected_relpath
-    if not snap_file.exists():
-        # Surface what IS in the snapshot so the failure is debuggable.
+    matching = [s for s in snaps if (s.data_root / expected_relpath).is_file()]
+    if not matching:
+        # Surface what IS in each snapshot so the failure is debuggable.
         import subprocess as _sp
-        listing = _sp.run(
-            ["find", str(snap.data_root), "-maxdepth", "5", "-name", "*.jsonl",
-             "-o", "-name", ".claude", "-print"],
-            capture_output=True, text=True,
-        ).stdout
+        listing_per_snap = []
+        for s in snaps:
+            out = _sp.run(
+                ["find", str(s.data_root), "-maxdepth", "5", "-name", "*.jsonl",
+                 "-o", "-name", ".claude", "-print"],
+                capture_output=True, text=True,
+            ).stdout
+            listing_per_snap.append(f"  data_root={s.data_root}\n{out[:2000]}")
         pytest.fail(
-            f"fixture not in snapshot at {snap_file}\n"
-            f"data_root: {snap.data_root}\n"
-            f"any .claude or *.jsonl under data_root (first 50):\n"
-            f"{listing[:5000]}"
+            f"fixture not in any of {len(snaps)} snapshot(s):\n"
+            + "\n".join(listing_per_snap)
         )
 
     # Restore into the live tree's projects dir (dest override). Drives the

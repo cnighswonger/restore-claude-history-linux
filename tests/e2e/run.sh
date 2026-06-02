@@ -22,8 +22,15 @@ RUN_TIMEOUT_SECS="${RUN_TIMEOUT_SECS:-900}"
 VM_MEM="${VM_MEM:-4G}"
 VM_CPUS="${VM_CPUS:-2}"
 # Branch/ref the guest clones for tests/integration/. Defaults to main; set
-# RCB_E2E_REF=feature/x to smoke unmerged changes against real backends.
+# RCB_E2E_REF=feature/x to smoke unmerged changes against real backends. The
+# accepted character set matches what git allows in ref names with one small
+# pragmatic exclusion: no `"` (would terminate the YAML string we embed it in).
 RCB_E2E_REF="${RCB_E2E_REF:-main}"
+case "$RCB_E2E_REF" in
+    *['"'\\$\`$'\n']*)
+        echo "ERROR: RCB_E2E_REF contains a disallowed character (\\, \", \$, \`, newline)" >&2
+        exit 2 ;;
+esac
 
 # ---------- preflight ----------
 preflight() {
@@ -110,9 +117,16 @@ EOF
 # Append the backend-specific user-data (skipping its #cloud-config header).
 # Substitute RCB_E2E_REF into the `git clone` step so dev branches can be
 # smoked before merge. Default `main` keeps the user-data files committable as
-# the production ref.
-sed "s|--depth, \"1\",|--branch, \"$RCB_E2E_REF\", --depth, \"1\",|" \
-    "$HERE/$BACKEND/user-data.yaml" | tail -n +2 >> "$SCRATCH/user-data"
+# the production ref. The substitution is done in Python rather than sed so
+# branch names with sed metacharacters (|, &, /, backslashes) can't escape.
+RCB_E2E_REF="$RCB_E2E_REF" python3 -c '
+import os, sys
+ref = os.environ["RCB_E2E_REF"]
+src = sys.stdin.read()
+needle = "--depth, \"1\","
+replacement = f"--branch, \"{ref}\", --depth, \"1\","
+sys.stdout.write(src.replace(needle, replacement))
+' < "$HERE/$BACKEND/user-data.yaml" | tail -n +2 >> "$SCRATCH/user-data"
 
 cat > "$SCRATCH/meta-data" <<EOF
 instance-id: rcb-e2e-$BACKEND-$$

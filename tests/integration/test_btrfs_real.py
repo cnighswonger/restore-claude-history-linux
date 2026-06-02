@@ -62,13 +62,22 @@ def test_btrfs_snapshot_full_restore(tmp_path):
     Mirrors the ZFS Layer 3 shape. The fixture is planted directly under the
     subvolume root (`<subvol>/.claude/projects/<proj>/`) so the orchestrator's
     `locate_projects_dir` finds it via the empty-suffix fallback — same pattern
-    the ZFS test relies on.
+    the ZFS test relies on. The payload bytes embed a per-run unique token so a
+    stale snapshot from a prior run that didn't clean up cannot accidentally
+    satisfy the byte-equality assertion.
     """
     base = Path(MOUNT)
-    tag = f"rcbrestore-{int(time.time())}"
+    tag = f"rcbrestore-{int(time.time())}-{os.getpid()}"
     subvol = base / f"sv-{tag}"
     snap = base / f"snap-{tag}"
-    payload = b"complete transcript body" * 20
+    # Per-run-unique payload: the tag makes stale-snapshot collisions detectable.
+    payload = f"complete transcript body for {tag}\n".encode() * 20
+
+    # Diagnostic anchor: which snapshot data_roots existed BEFORE we created
+    # ours. If the post-restore bytes match payload, the only way that's
+    # possible is from a snapshot we just created (the tag is unique).
+    snaps_before = {str(s.data_root) for s in BtrfsBackend().discover()}
+
     try:
         _btrfs("subvolume", "create", str(subvol))
         proj = subvol / ".claude" / "projects" / PROJECT
@@ -77,6 +86,12 @@ def test_btrfs_snapshot_full_restore(tmp_path):
         live.write_bytes(payload)
 
         _btrfs("subvolume", "snapshot", "-r", str(subvol), str(snap))
+
+        # Confirm a NEW snapshot is in the inventory, so the restore is reading
+        # the one we just created (not a leftover from a prior run).
+        snaps_after = {str(s.data_root) for s in BtrfsBackend().discover()}
+        new = snaps_after - snaps_before
+        assert new, "no new Btrfs snapshot appeared after subvolume snapshot"
 
         # Simulate the deletion we recover from.
         live.unlink()
