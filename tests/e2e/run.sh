@@ -249,9 +249,10 @@ fi
 case "$BACKEND" in
     zfs)        TEST_ENV="RCB_ZFS_TEST_DATASET=rcbtest/home" ;;
     btrfs)      TEST_ENV="RCB_BTRFS_TEST_MOUNT=/mnt/rcbbtrfs" ;;
-    timeshift)  TEST_ENV="RCB_TIMESHIFT_TEST_BASE=/timeshift/snapshots \
+    timeshift)  TEST_ENV="HOME=/home/ubuntu \
+                          RCB_TIMESHIFT_TEST_BASE=/timeshift/snapshots \
                           RCB_TIMESHIFT_TEST_CONFIG=/etc/timeshift/timeshift.json \
-                          RCB_TIMESHIFT_FIXTURE_PATH=/root/.claude/projects/-rcb-integration-demo/session.jsonl \
+                          RCB_TIMESHIFT_FIXTURE_PATH=/home/ubuntu/.claude/projects/-rcb-integration-demo/session.jsonl \
                           RCB_TIMESHIFT_FIXTURE_BYTES_PATH=/var/lib/rcb-expected.bin" ;;
 esac
 
