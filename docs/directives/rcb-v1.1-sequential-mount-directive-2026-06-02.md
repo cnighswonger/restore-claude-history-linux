@@ -24,7 +24,7 @@ Our Linux backends don't have that forcing function — ZFS exposes `.zfs/snapsh
 
 - **Size/complexity budget:** ~200 LOC net delta in `restore_claude_history.py`, plus ~10 lines per backend for `created_at` discovery (3 backends). Total expected: ~230 LOC delta. Review flags an implementation materially larger (≈2×) than this.
 - **Threat model:** No new external inputs. The backend timestamp discovery calls are read-only inspections of pre-trusted snapshot metadata (`zfs get creation`, `btrfs subvolume show -m`, Timeshift snapshot dir name / `info.json`). No new subprocess targets, no parsing of user-supplied data.
-- **Maintainability constraints:** `created_at` is a single new field on the existing `DiscoveredSnapshot` dataclass — no new abstractions. The orchestrator gains one new helper (newest-first iteration with `seen`-set dedupe), replacing two existing helpers (`pick_largest`, the post-loop restore in `run_restore`). Net abstraction count decreases by one.
+- **Maintainability constraints:** `created_at` is a single new field on the existing `DiscoveredSnapshot` dataclass — no new abstractions. The jsonl path absorbs `pick_largest` into a `seen`-set sequential loop (one helper removed, one inline loop added — net zero). The subdir path (`restore_subdirs` + its post-loop call site) is preserved verbatim. Net abstraction count is unchanged: one helper deleted, no new helpers introduced.
 - **Performance/reliability:** Restore-loop peak memory drops from O(snapshots × projects × files) to O(snapshots) for the snapshot list plus O(seen-pairs) for the dedupe set. Wall-clock should be no worse than current (we do the same I/O work in a different order). No reliability regression — first-writer-wins on mtime-ordered snapshots gives the same observable result as pick-largest, because JSONLs are append-only.
 - **Load-bearing?** **Yes.** This adds a required field (`created_at`) to the `DiscoveredSnapshot` dataclass, which is a wire-contract surface for any future backend implementation. Also touches the hot path that the v1.0.0 dogfood validated end-to-end. Adds Chris as a required approver before `ready-for-merge`.
 
@@ -123,7 +123,7 @@ The tracking issue named three options. Rationale for picking (a):
 - No backend ABC changes beyond the new field on `DiscoveredSnapshot`. The `discover()` signature is unchanged.
 - No CLI surface changes. `--list-backends` output may show the new timestamp in verbose mode but is not required.
 - No subdir-restore semantic changes at all. `restore_subdirs` and its existing largest-subtree selection rule are preserved verbatim. The v1.1 refactor scope is the jsonl path only.
-- Backend-creation timestamps are not normalized across backends. Each backend reports what its tooling reports, converted to UTC. We do not attempt to second-guess upstream timestamps (e.g. if Timeshift's dir-name timestamp drifts from `info.json`, the dir name wins because that's what existed historically).
+- Backend-creation timestamps are not normalized across backends. Each backend reports what its tooling reports, converted to UTC. We do not attempt to second-guess upstream timestamps. The Timeshift source-priority rule above (`info.json:created` primary, dir name fallback) is the only per-backend precedence call this directive makes.
 
 ## Acceptance criteria
 
