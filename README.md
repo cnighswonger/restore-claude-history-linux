@@ -8,7 +8,7 @@ Recover deleted Claude Code chat transcripts from Linux filesystem snapshots.
 >     - `--project NAME` has a Layer 1 test of the underlying `index_projects` filter function; its CLI wiring (`Options.project` → restore loop) has no automated test.
 >     - `--list-backends` has no automated test coverage at any layer.
 > - Unusual home-dir layouts: encrypted home (eCryptfs / fscrypt / ZFS-native), symlinked home across filesystems, NFS-mounted home.
-> - Cross-backend overlap-resolution against real backends (e.g. Timeshift-on-Btrfs deduplication) — tracked as [#13](https://github.com/cnighswonger/restore-claude-history-linux/issues/13) for v1.1.
+> - Cross-backend overlap-resolution against real backends (e.g. Timeshift-on-Btrfs deduplication) — tracked as [#13](https://github.com/vsits/restore-claude-history-linux/issues/13) for v1.1.
 >
 > **Reading the rest of this README assuming production-grade is wrong.** Use the tool, but treat each restore as a candidate to verify by hand.
 
@@ -49,7 +49,7 @@ This script: [`restore_claude_history.py`](restore_claude_history.py)
 ### Quickstart
 
 ```bash
-git clone https://github.com/cnighswonger/restore-claude-history-linux
+git clone https://github.com/vsits/restore-claude-history-linux
 cd restore-claude-history-linux
 
 # See which backends are available and how many snapshots each found:

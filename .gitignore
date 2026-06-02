@@ -1,6 +1,7 @@
 personal-notes.md
 handoff.md
-.claude/
+.claude/*
+!.claude/github-app
 __pycache__/
 *.pyc
 .pytest_cache/

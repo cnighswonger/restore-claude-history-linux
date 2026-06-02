@@ -1,4 +1,4 @@
-# AGENTS.md — cnighswonger/restore-claude-history-linux
+# AGENTS.md — vsits/restore-claude-history-linux
 
 Operating manual for AI agents (Claude Code, Codex, others) and human contributors working in this repository. Canonical file; AI tools should read this first.
 
@@ -10,8 +10,8 @@ The upstream tool is macOS + APFS + Time Machine only. This port keeps the upstr
 
 - **License:** MIT (matches upstream; see [`LICENSE`](LICENSE))
 - **Upstream:** `garrettmoss/restore-claude-history` — bidirectional "See also" cross-reference maintained
-- **Owner:** cnighswonger (personal account)
-- **Status:** v1 candidate — backend abstraction and three v1 adapters (ZFS, Btrfs, Timeshift) implemented per [`docs/directives/rcb-v1-directive-2026-05-28.md`](docs/directives/rcb-v1-directive-2026-05-28.md); QEMU e2e harness held for execution before the `v1.0.0` tag (see [`docs/plans/qemu-e2e-plan.md`](docs/plans/qemu-e2e-plan.md))
+- **Owner:** `vsits` org (transferred from `cnighswonger` on 2026-06-02; GitHub 301-redirects the old URL transparently)
+- **Status:** v1.0.0 shipped (tagged `linux/v1.0.0`, 2026-06-02). Backend abstraction and three v1 adapters (ZFS, Btrfs, Timeshift) implemented per [`docs/directives/rcb-v1-directive-2026-05-28.md`](docs/directives/rcb-v1-directive-2026-05-28.md); QEMU e2e harness validated all three (see [`docs/plans/qemu-e2e-plan.md`](docs/plans/qemu-e2e-plan.md)). v1.1 work tracked in open issues.
 
 ## v1 scope
 
@@ -29,11 +29,11 @@ The upstream tool is macOS + APFS + Time Machine only. This port keeps the upstr
 
 Three bot identities write to this repo:
 
-- **`vsits-restore-claude-builder[bot]`** (slug `restore-claude-builder` in `generate-token.sh`) — the implementer. Authors PRs, pushes commits, posts PR/issue comments, edits PR bodies. cnighswonger-owned, single-repo scope.
-- **`vsits-codex-review-agent[bot]`** (slug `codex-reviewer` in `generate-token.sh`) — the Codex review bot. Posts ONLY formal `gh pr review` actions (see "Codex review triggers" below). Never authors PRs, never merges.
+- **`vsits-restore-claude-builder[bot]`** (slug `restore-claude-builder` in `generate-token.sh`) — the implementer. Authors PRs, pushes commits, posts PR/issue comments, edits PR bodies. Single-repo scope; install ID updated 2026-06-02 alongside the vsits-org transfer.
+- **`vsits-codex-reviewer[bot]`** (slug `codex-reviewer-vsits` in `generate-token.sh`) — the Codex review bot. Posts ONLY formal `gh pr review` actions (see "Codex review triggers" below). Never authors PRs, never merges. **App ID 3877109, install ID 135908795.** Shares the vsits-org Codex install with `aegis`, `cc-watch`, `llm-traffic-jsonl`, `vsits-theme`.
 - **`vsits-team-lead-agent[bot]`** (slug `team-lead` in `generate-token.sh`) — AI Team Lead identity. Used for repo seeding (label creation, branch creation, AGENTS.md edits during initial setup), label transitions (e.g., applying `approved-by-lead`, transitioning workflow stages), and cross-repo coordination. Should not be used as a routine implementer or reviewer.
 
-> The `codex-reviewer-vsits` slug in `generate-token.sh` is a different bot scoped to vsits-org repos only (`vsits/aegis`, etc.). For this repo, use `codex-reviewer` (no `-vsits` suffix).
+> **Codex slug discipline.** This repo is vsits-org-scoped, so Codex reviews use slug `codex-reviewer-vsits` (which mints `vsits-codex-reviewer[bot]`). The default `codex-reviewer` slug is reserved for cnighswonger-owned repos (e.g. `cache-fix`) and posts under a different bot identity. See `shared/playbook_codex_delegate_gh_auth.md` for the delegation pattern; `cnighswonger/restore-claude-history-linux` history before 2026-06-02 used `codex-reviewer` because the repo was cnighswonger-owned at that time — that is correct for that history and not a precedent for current work.
 
 **Never use the operator's personal PAT for routine writes.** The only legitimate PAT uses are admin operations not delegated to a bot (e.g., creating the repo via fork, configuring branch protection, App management).
 
@@ -70,13 +70,13 @@ The implementer invokes Codex via `mcp__llm-relay__cli_delegate` with a structur
 
 1. **Inline summary in the PR description** — round number, severity table, finding-and-resolution rows. Keeps the design narrative discoverable for future readers.
 
-2. **Formal `gh pr review` post under the `vsits-codex-review-agent[bot]` identity** (slug `codex-reviewer` in `generate-token.sh`).
+2. **Formal `gh pr review` post under the `vsits-codex-reviewer[bot]` identity** (slug `codex-reviewer-vsits` in `generate-token.sh`).
 
 **Action depends on Codex's verdict** — pick the right command for each round:
 
 ```bash
-TOKEN=$(~/.claude/github-apps/generate-token.sh codex-reviewer)
-REPO=cnighswonger/restore-claude-history-linux
+TOKEN=$(~/.claude/github-apps/generate-token.sh codex-reviewer-vsits)
+REPO=vsits/restore-claude-history-linux
 
 # Final-round APPROVE — load-bearing for the formal-review gate:
 GH_TOKEN=$TOKEN gh pr review <PR#> --repo $REPO --approve --body "<codex findings>"
@@ -145,7 +145,7 @@ PRs and issues progress through these labels (mirrors cache-fix/aegis pattern):
 | `approved-by-codex-agent` | Codex review approval gate satisfied |
 | `needs-human-review` | Requires human review; full stop until cleared |
 
-Plus priority (`P0`–`P3`) and backend scope (`backend:zfs`, `backend:btrfs`, etc.). See `gh label list --repo cnighswonger/restore-claude-history-linux` for the full set.
+Plus priority (`P0`–`P3`) and backend scope (`backend:zfs`, `backend:btrfs`, etc.). See `gh label list --repo vsits/restore-claude-history-linux` for the full set.
 
 ### `needs-human-review` — escalation lock semantics
 
@@ -175,10 +175,10 @@ Issues are enabled so Linux users can report recovery failures across the many f
 
 **Internal vs. external authors (authoritative allowlist).** An issue is *internal* only if its author is exactly one of these GitHub logins:
 
-- `cnighswonger` — the operator
+- `cnighswonger` — the operator (personal GitHub login)
 - `vsits-team-lead-agent[bot]`
 - `vsits-restore-claude-builder[bot]`
-- `vsits-codex-review-agent[bot]`
+- `vsits-codex-reviewer[bot]` — the current Codex review bot identity for this (vsits-org) repo. Historical issues authored by `vsits-codex-review-agent[bot]` before the 2026-06-02 transfer are also internal — that was the prior bot identity for the same role.
 
 Every other author — any other human collaborator, any bot identity not on this list, any identity added in future — is **external by default** until this list is updated. The rule keys off author login; the list is authoritative, so do not infer membership from role names or org affiliation.
 
