@@ -3,7 +3,10 @@
 Recover deleted Claude Code chat transcripts from Linux filesystem snapshots.
 
 > **Status: beta.** The recovery logic is end-to-end-verified for **ZFS**, **Btrfs**, and **Timeshift** on Ubuntu 24.04 (real kernels, real snapshots, byte-equal restore). It has not yet been validated against real user data — only synthetic fixtures planted by the test harness. Specifically untested:
-> - The e2e harness exercises a single path: unflagged restore of one synthetic transcript from one snapshot. Code paths reachable only via `--include-memory`, `--project NAME`, or `--dry-run` have unit + tempdir coverage (Layer 1/2) but have never run inside the harness against a real backend. `--list-backends` has no automated test coverage at any layer.
+> - The e2e harness exercises a single path: unflagged restore of one synthetic transcript from one snapshot. Per-flag status:
+>     - `--dry-run` and `--include-memory` have full restore-loop tempdir tests (Layer 2), but never run inside the e2e harness against a real backend.
+>     - `--project NAME` has a Layer 1 test of the underlying `index_projects` filter function; its CLI wiring (`Options.project` → restore loop) has no automated test.
+>     - `--list-backends` has no automated test coverage at any layer.
 > - Unusual home-dir layouts: encrypted home (eCryptfs / fscrypt / ZFS-native), symlinked home across filesystems, NFS-mounted home.
 > - Cross-backend overlap-resolution against real backends (e.g. Timeshift-on-Btrfs deduplication) — tracked as [#13](https://github.com/cnighswonger/restore-claude-history-linux/issues/13) for v1.1.
 > - The full loop: restored file → Claude Code actually loads it without re-deletion — tracked as [#15](https://github.com/cnighswonger/restore-claude-history-linux/issues/15).
