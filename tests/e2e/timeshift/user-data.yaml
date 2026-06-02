@@ -44,4 +44,10 @@ runcmd:
   # Pre-seed Timeshift's backup_device_uuid (the seeded config has it empty)
   # to the rootfs UUID, so `timeshift --create` does not prompt interactively.
   - [ sh, -c, "python3 -c 'import json,subprocess; p=\"/etc/timeshift/timeshift.json\"; d=json.load(open(p)); d[\"backup_device_uuid\"]=subprocess.check_output([\"findmnt\",\"-no\",\"UUID\",\"/\"]).decode().strip(); json.dump(d,open(p,\"w\"),indent=2)'" ]
+  # Plant the restore-test fixture under /root (HOME=/root for sudo'd pytest)
+  # BEFORE taking the snapshot, so Timeshift's RSYNC of the rootfs captures it.
+  # Save expected bytes separately so the test can compare after unlink.
+  - [ mkdir, -p, /root/.claude/projects/-rcb-integration-demo ]
+  - [ sh, -c, "head -c 4096 /dev/urandom | base64 > /var/lib/rcb-expected.bin" ]
+  - [ sh, -c, "cp /var/lib/rcb-expected.bin /root/.claude/projects/-rcb-integration-demo/session.jsonl" ]
   - [ sh, -c, "timeshift --create --comments rcb-e2e" ]

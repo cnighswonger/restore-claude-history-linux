@@ -21,6 +21,9 @@ SSH_WAIT_SECS="${SSH_WAIT_SECS:-300}"
 RUN_TIMEOUT_SECS="${RUN_TIMEOUT_SECS:-900}"
 VM_MEM="${VM_MEM:-4G}"
 VM_CPUS="${VM_CPUS:-2}"
+# Branch/ref the guest clones for tests/integration/. Defaults to main; set
+# RCB_E2E_REF=feature/x to smoke unmerged changes against real backends.
+RCB_E2E_REF="${RCB_E2E_REF:-main}"
 
 # ---------- preflight ----------
 preflight() {
@@ -105,7 +108,11 @@ packages:
   - python3-pytest
 EOF
 # Append the backend-specific user-data (skipping its #cloud-config header).
-tail -n +2 "$HERE/$BACKEND/user-data.yaml" >> "$SCRATCH/user-data"
+# Substitute RCB_E2E_REF into the `git clone` step so dev branches can be
+# smoked before merge. Default `main` keeps the user-data files committable as
+# the production ref.
+sed "s|--depth, \"1\",|--branch, \"$RCB_E2E_REF\", --depth, \"1\",|" \
+    "$HERE/$BACKEND/user-data.yaml" | tail -n +2 >> "$SCRATCH/user-data"
 
 cat > "$SCRATCH/meta-data" <<EOF
 instance-id: rcb-e2e-$BACKEND-$$
@@ -242,7 +249,10 @@ fi
 case "$BACKEND" in
     zfs)        TEST_ENV="RCB_ZFS_TEST_DATASET=rcbtest/home" ;;
     btrfs)      TEST_ENV="RCB_BTRFS_TEST_MOUNT=/mnt/rcbbtrfs" ;;
-    timeshift)  TEST_ENV="RCB_TIMESHIFT_TEST_BASE=/timeshift/snapshots RCB_TIMESHIFT_TEST_CONFIG=/etc/timeshift/timeshift.json" ;;
+    timeshift)  TEST_ENV="RCB_TIMESHIFT_TEST_BASE=/timeshift/snapshots \
+                          RCB_TIMESHIFT_TEST_CONFIG=/etc/timeshift/timeshift.json \
+                          RCB_TIMESHIFT_FIXTURE_PATH=/root/.claude/projects/-rcb-integration-demo/session.jsonl \
+                          RCB_TIMESHIFT_FIXTURE_BYTES_PATH=/var/lib/rcb-expected.bin" ;;
 esac
 
 echo "[test]   pytest tests/integration/test_${BACKEND}_real.py inside VM"

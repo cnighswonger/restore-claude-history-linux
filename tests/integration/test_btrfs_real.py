@@ -17,6 +17,7 @@ from pathlib import Path
 import pytest
 
 from backends.btrfs import BtrfsBackend
+from restore_claude_history import Options, run_restore
 
 MOUNT = os.environ.get("RCB_BTRFS_TEST_MOUNT")
 
@@ -25,12 +26,15 @@ pytestmark = pytest.mark.skipif(
     reason="set RCB_BTRFS_TEST_MOUNT to a writable Btrfs mountpoint to run",
 )
 
+PROJECT = "-rcb-integration-demo"
+
 
 def _btrfs(*args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(["btrfs", *args], capture_output=True, text=True, check=True)
 
 
 def test_btrfs_snapshot_is_discovered():
+    """Lightweight smoke: discover() surfaces a snapshot we just created."""
     base = Path(MOUNT)
     tag = f"rcbtest-{int(time.time())}"
     subvol = base / f"sv-{tag}"
@@ -45,6 +49,48 @@ def test_btrfs_snapshot_is_discovered():
         # the marker we wrote before snapshotting.
         matches = [s for s in snaps if (s.data_root / "marker").is_file()]
         assert matches, "discover() did not surface the snapshot we just created"
+    finally:
+        subprocess.run(["btrfs", "subvolume", "delete", str(snap)],
+                       capture_output=True, text=True)
+        subprocess.run(["btrfs", "subvolume", "delete", str(subvol)],
+                       capture_output=True, text=True)
+
+
+def test_btrfs_snapshot_full_restore(tmp_path):
+    """End-to-end: write transcript into a subvol, snapshot, delete, restore.
+
+    Mirrors the ZFS Layer 3 shape. The fixture is planted directly under the
+    subvolume root (`<subvol>/.claude/projects/<proj>/`) so the orchestrator's
+    `locate_projects_dir` finds it via the empty-suffix fallback — same pattern
+    the ZFS test relies on.
+    """
+    base = Path(MOUNT)
+    tag = f"rcbrestore-{int(time.time())}"
+    subvol = base / f"sv-{tag}"
+    snap = base / f"snap-{tag}"
+    payload = b"complete transcript body" * 20
+    try:
+        _btrfs("subvolume", "create", str(subvol))
+        proj = subvol / ".claude" / "projects" / PROJECT
+        proj.mkdir(parents=True)
+        live = proj / "session.jsonl"
+        live.write_bytes(payload)
+
+        _btrfs("subvolume", "snapshot", "-r", str(subvol), str(snap))
+
+        # Simulate the deletion we recover from.
+        live.unlink()
+        assert not live.exists()
+
+        # Restore into the live tree's projects dir (dest override). The
+        # backend's discover() returns the snapshot; run_restore walks it,
+        # finds .claude/projects under the snapshot root, copies the file.
+        dest = subvol / ".claude" / "projects"
+        rc = run_restore([BtrfsBackend()], Options(backend="btrfs", dest=dest))
+        assert rc == 0
+
+        assert live.exists(), "restore did not recover the deleted transcript"
+        assert live.read_bytes() == payload, "restored bytes differ from snapshot"
     finally:
         subprocess.run(["btrfs", "subvolume", "delete", str(snap)],
                        capture_output=True, text=True)
