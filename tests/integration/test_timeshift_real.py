@@ -99,9 +99,12 @@ def test_timeshift_full_restore():
         import subprocess as _sp
         listing_per_snap = []
         for s in snaps:
+            # `find` boolean precedence: -name A -o -name B -print only
+            # prints B-matches. Wrap the OR in parens so -print fires on both.
             out = _sp.run(
-                ["find", str(s.data_root), "-maxdepth", "5", "-name", "*.jsonl",
-                 "-o", "-name", ".claude", "-print"],
+                ["find", str(s.data_root), "-maxdepth", "5",
+                 "(", "-name", "*.jsonl", "-o", "-name", ".claude", ")",
+                 "-print"],
                 capture_output=True, text=True,
             ).stdout
             listing_per_snap.append(f"  data_root={s.data_root}\n{out[:2000]}")
