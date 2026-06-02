@@ -104,6 +104,27 @@ LLM-written code reliably satisfies functional requirements and neglects non-fun
 
 **Anti-bloat review lens.** Alongside correctness, reviewers flag bloat that is (a) clearly larger/more complex than requirements justify AND (b) safe to simplify without changing behavior, stating the magnitude (e.g. a 100-line switch reducible to one line). Hunt: over-abstraction, dead code, copy-paste duplication, unnecessary state machines, defensive handling for impossible cases. Do not flag complexity that exists for a real reason, and never assert a simplification is safe when you cannot verify it is behavior-preserving. Bloat is advisory unless it causes a correctness problem. Also flag a missing/empty NFR section, and validate the `Load-bearing?` declaration against its criteria.
 
+### Upstream-sync variant
+
+Cherry-pick PRs from `upstream/master` use a **reduced NFR rubric** in place of the standard checklist above. The design decisions encoded by an upstream commit already exist; this review can't change them. What we own is (a) whether to apply the commit, (b) the conflict-resolution choices, (c) the verification that our port still works. The rubric below captures exactly those.
+
+A cherry-pick PR's `## Non-Functional Requirements` section MUST include:
+
+- **Cherry-picked SHAs** — each upstream SHA + our cherry-pick SHA + one-line description, in the order applied. The standard PR-body table also covers this; the NFR section may reference it rather than duplicate.
+- **Conflict resolutions** — for each conflict, name the file/line and the resolution choice (kept-both, took-ours, took-theirs, manually-adapted). Each choice is its own review surface. `n/a` if every cherry-pick applied clean.
+- **Port-fit verification** — what specifically proves the commit still works on our Linux port (smoke test, unit test, manual run). For docs-only commits, `n/a` is valid.
+- **Load-bearing?** (required yes/no) — same criteria as the standard rubric. The fact that upstream's design is fixed doesn't change whether the *result* touches our shared abstractions, wire contracts, or security surface. A docs/flag commit is no; an upstream change to credential handling, snapshot enumeration, or backend interfaces is yes — and triggers the human backstop even though we're not the author.
+
+Fields explicitly NOT in the upstream-sync rubric:
+
+- **Size/complexity budget** — upstream already paid the design cost. Our review surface is the conflict resolution, which has its own line above.
+- **Threat model** — upstream's threat model is upstream's. Our threat surface is exposed by the `Load-bearing?` declaration; when yes, the threat discussion belongs in the standard human-backstop review, not in this NFR section.
+- **Maintainability constraints** — same logic. An upstream commit introducing a new abstraction is upstream's design decision. We may decline to apply on those grounds (in which case the commit goes on the deferred list, not in this PR), but we do not retroactively second-guess upstream's choice in the NFR section of a cherry-pick PR.
+
+**Anti-bloat lens on upstream-sync PRs.** The lens applies to what we added in the cherry-pick — conflict resolutions, defensive adapters, port-specific shims — NOT to the upstream commit content itself. If reviewers find bloat in upstream's existing design, the options are: (1) note it as an upstream-side observation and consider opening a simplification PR against upstream; (2) if the bloat is dangerous enough that we don't want to absorb it, decline to cherry-pick the commit and document why on the deferred-commits issue. What reviewers must NOT do: rewrite the cherry-picked content in our port to "fix" the upstream design — that fragments the port from upstream and undermines the rationale for the cherry-pick workflow.
+
+**Escalation to the full rubric.** If the cherry-pick set includes a commit that requires substantive translation (e.g. swapping a macOS-specific code path for a Linux equivalent rather than a mechanical merge), that translated commit is net-new design work in our port and gets the standard NFR rubric for that commit's contribution. The unchanged cherry-picks in the same PR keep the upstream-sync variant. In practice this case probably wants its own PR — the mechanical and translation pieces have different review needs.
+
 **Human backstop.** When `Load-bearing?` is **yes**, Chris's review is part of the required review set: do not apply the `ready-for-merge` state (or merge) until he has signed off. This adds a required approver — it is **not** the `needs-human-review` hard-stop, so bots continue normal review and labeling (no conflict with the Codex review post). Rationale: the independent reviewer and the Lead are both LLMs with correlated blind spots. Routine leaf code rides on Lead + Codex.
 
 
