@@ -153,5 +153,5 @@ This directive PR establishes scope, NFRs, and the design choice. The implementa
 
 - Upstream commit: [garrettmoss/restore-claude-history@0dd756b](https://github.com/garrettmoss/restore-claude-history/commit/0dd756b)
 - Tracking issue: [#22](https://github.com/vsits/restore-claude-history-linux/issues/22)
-- Spike memory: [`project_linux-cc-cleanup-mechanism`](../../../../.claude/projects/-home-manager-git-repos-restore-claude-history-linux/memory/project_linux-cc-cleanup-mechanism.md) — mtime semantics; relevant context for the first-writer-wins correctness argument.
+- Linux CC cleanup mechanism — pure-mtime sweep verified against the bundled CC v2.1.88, no metadata-orphan check. Relevant context for the first-writer-wins correctness argument: the cleanup pass and the picker both key on file mtime, and JSONLs are append-only, so newest mtime always means largest size on disk.
 - v1.0.0 dogfood (procedure to mirror): [#15](https://github.com/vsits/restore-claude-history-linux/issues/15).
