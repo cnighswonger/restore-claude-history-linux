@@ -19,7 +19,7 @@ Upstream's `e7fa576` renamed the script as a disambiguation step ahead of adding
 
 ## Non-Functional Requirements
 
-- **Size/complexity budget:** ~40 lines of diff total — one `git mv` plus ~30 reference updates across the 13 files enumerated in Section 2. (As of `grep -rn "restore_claude_history" --include="*.py" --include="*.md" --include="*.sh"` at PR #33's head `87417e8`, raw grep returns 31 hits across 15 tracked files; subtracting `restore_claude_history.py` itself — handled by `git mv` — and this v1.2 directive — which preserves historical references by design — leaves the 13 implementation-target files listed below.) Review flags any net-new code; this PR adds none.
+- **Size/complexity budget:** ~40 lines of diff total — one `git mv` plus 22 reference updates across the 13 implementation-target files enumerated in Section 2. (The 22/13 figure is the exact survey of the Section 2 list at PR #33's head `87417e8`; the raw `grep -rn "restore_claude_history" --include="*.py" --include="*.md" --include="*.sh"` at that head returns more, because the script itself and review-discussion documents preserve historical references — see Section 2's "two files not in this list" subsection and the Validation allowlist for the full accounting.) Review flags any net-new code; this PR adds none.
 - **Threat model:** None — the rename does not introduce new inputs, subprocesses, or trust boundaries. The only externally-visible change is the script path users invoke, which is documented in the release notes.
 - **Maintainability constraints:** No new abstractions. No back-compat shim, symlink, or wrapper script for the old filename — the deprecation note in the release body is the migration surface (see "Deprecation policy" below). Old git tags (`linux/v1.0.0`, `linux/v1.1.0`) remain valid historical references to the old filename; users on those tags retain the old path.
 - **Performance/reliability:** No runtime impact.
@@ -56,7 +56,7 @@ Mechanical find-replace of the string `restore_claude_history` → `restore_clau
 Two files in the raw grep (15 total) are deliberately not in this list:
 
 - `restore_claude_history.py` — handled by the `git mv` in Section 1, not by find-replace.
-- `docs/directives/rcb-v1.2-rename-restore-claude-code-2026-06-12.md` (this file) — preserves 8 references to the historical name by design, since the directive is the design surface for the rename and must continue to discuss the old name to be readable.
+- `docs/directives/rcb-v1.2-rename-restore-claude-code-2026-06-12.md` (this file) — preserves the historical name throughout by design, since the directive is the design surface for the rename and must continue to discuss the old name to be readable. The exact count is intentionally not pinned because review rounds and revisions will keep adding literal historical-name mentions to this document.
 
 Do NOT update historical references in:
 
@@ -96,7 +96,7 @@ We do **not** ship a symlink, wrapper script, or `setup.py` console-entry shim f
 - QEMU e2e harness passes on ZFS, Btrfs, and Timeshift after rename.
 - `python3 restore_claude_code.py --list-backends` runs successfully on the dogfood host.
 - `grep -rn "restore_claude_history" --include="*.py" --include="*.md" --include="*.sh"` returns hits ONLY in the following allowlist of files that intentionally preserve the historical name (any hit outside this list is a missed reference; any missed file from Section 2 is a forgotten reference):
-  - `docs/directives/rcb-v1.2-rename-restore-claude-code-2026-06-12.md` (this file) — the rename's design surface, by construction (~8 references).
+  - `docs/directives/rcb-v1.2-rename-restore-claude-code-2026-06-12.md` (this file) — the rename's design surface, by construction. Count is intentionally not pinned (review rounds add literal mentions).
   - `docs/code-reviews/pr-33-round-1-codex.md` and any subsequent Codex review artifacts on the PRs covered by this directive — append-only historical record; do not edit.
 
 Both files in Section 2's "older directives" sub-list (the v1 and v1.1 directives) DO get the find-replace applied per Section 2, so they are NOT in this allowlist — they should return zero `restore_claude_history` hits after the implementation PR lands.
