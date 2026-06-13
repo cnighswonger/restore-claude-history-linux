@@ -1,6 +1,6 @@
 # restore-claude-history-linux
 
-Recover deleted Claude Code chat transcripts from Linux filesystem snapshots — **ZFS**, **Btrfs**, or **Timeshift**. `v1.1.0` ships with end-to-end validation on real kernels for all three backends; a real Btrfs dogfood confirmed a recovered transcript loads and resumes in a fresh Claude Code session. Linux port of [`garrettmoss/restore-claude-history`](https://github.com/garrettmoss/restore-claude-history) (macOS Time Machine).
+Recover deleted Claude Code chat transcripts from Linux filesystem snapshots — **ZFS**, **Btrfs**, or **Timeshift**. `v1.2.0` ships with end-to-end validation on real kernels for all three backends; a real Btrfs dogfood confirmed a recovered transcript loads and resumes in a fresh Claude Code session. Linux port of [`garrettmoss/restore-claude-history`](https://github.com/garrettmoss/restore-claude-history) (macOS Time Machine).
 
 ## Quickstart
 
